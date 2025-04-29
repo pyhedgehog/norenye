@@ -1,0 +1,15 @@
+[tool.poetry]
+package-mode = false
+name = "norenye"
+authors = ["Michael Dubner <pywebmail@list.ru>"]
+version = "0.0.1"
+description = "Dependency tracking for tests"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pytest = "^8.3.5"
+pytest-docker-tools = "^3.1.9"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,28 @@
+{
+  "services": {
+    "svc1": {
+      "target": "http://127.0.0.1:8001",
+      "hosts": [
+        "svc1.example.com",
+        "svc2.example.com"
+      ]
+    },
+    "svc2": {
+      "target": "http://127.0.0.1:8002",
+      "hosts": [
+        "svc2.example.com",
+        "svc3.example.com"
+      ]
+    },
+    "svc3": {
+      "target": "http://127.0.0.1:8003",
+      "hosts": [
+        "svc3.example.com",
+        "svc1.example.com"
+      ],
+      "secrets": ["bot123"]
+    }
+  },
+  "token": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
+  "writeback": true
+}
