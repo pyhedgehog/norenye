@@ -31,6 +31,7 @@ server {
     set $norenye_config '/etc/nginx/snippets/norenye.json';  # path to config
     js_shared_dict_zone zone=norenye:1M;  # at least size of config
     set $norenye_shared_dict norenye;  # must match `js_shared_dict_zone` directive above
+    #set $norenye_xerror 1;  # enable X-Norenye-Error header for config debugging
     location /_/static/ {
         alias "/opt/norenye/static/";  # path to css and other files you want to 
     }
@@ -200,16 +201,19 @@ There also can be following template entries in which placeholders will not be p
 
 ## For developer
 
-Tests uses [`pytest`](https://pytest.org/) and [`docker`](https://pypi.org/project/pytest-docker-tools/). Beware.
+Tests uses [`pytest`](https://pytest.org/). Beware.
+
+Tests can be configured via `--norenye` argument:
+- `docker` or `dockerports` uses [`docker`](https://pypi.org/project/pytest-docker-tools/) plugin.
+- `process` uses [`nginx`](https://pypi.org/project/pytest-nginx/) plugin and requires installed nginx with NJS module.
 
 ### TODO
 
 **Before 1.0**:
 
 - More control for "default service". To start with - priority.
-- Tests:
-  - Switch `norenyaclient` from `pytest.mark.parametrize` to pytest option and add process-spawn variant.
-  - Write tests for all APIs.
+- Complete set of APIs.
+- Write tests for all APIs.
 - Autotests against different versions of Nginx/Angie + NJS/QJS.
 
 **Future**:

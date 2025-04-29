@@ -41,7 +41,7 @@ const config_placeholder = {status:0,services:null,tokens:null,read_token:false,
 const service_placeholder = {target:null,hosts:null,url:null,secrets:null,metadata:null};
 const nocache = Symbol('nocache');
 
-if (new Date().getFullYear() >= 2099) {
+if (new Date().getFullYear() >= 2099) { // Search for "Set-Cookie" to understand reason.
   ngx.log(ngx.ERR, "WARNING: Pending deprecation of norenye.js module in front of epoch end.");
 }
 
@@ -49,6 +49,10 @@ function copy(o, keys) {
   if(keys !== undefined)
     return Object.fromEntries(keys.map((k)=>[k,o[k]]));
   return Object.fromEntries(Object.entries(o));
+}
+
+function boolparam(v) {
+  return Boolean(v&&v!='0'&&v!='no'&&v!='false');
 }
 
 function errorconfig(errstring) {
@@ -70,7 +74,7 @@ function ro_url(u) {
     uo.password = '';
     return String(uo);
   }
-  return String(u).replace(/(?<=\/)[^@/]*@/,'');
+  return String(u).replace(/(?<=\/)[^@/]*@/, '');
 }
 
 function enrichtoken(config, token, rights) {
@@ -222,7 +226,11 @@ function readconfig(config_fn) {
 function writeconfig(config) {
   if(!config.writeback)
     throw new Error('Undefined config.writeback');
-  fs.writeFileSync(config.writeback, JSON.stringify(config), { encoding: "utf8" });
+  var config1 = Object.assign({}, config);
+  delete config1.status;
+  delete config1.name;
+  ngx.log(ngx.ERR, `Writing to ${config.writeback}.`)
+  fs.writeFileSync(config.writeback, JSON.stringify(config1), { encoding: "utf8" });
 }
 
 function getconfigfile(r) {
@@ -334,8 +342,10 @@ function getsessionservice(r, config, service_name, return_error) {
 
 function getfail(r) {
   var config = getconfig(r);
-  var service = getsessionservice(r, config);
-  return Number(!service);
+  var service = getsessionservice(r, config, null, true);
+  if(service.error && boolparam(r.variables.norenye_xerror))
+    r.headersOut['X-Norenye-Error'] = String(service.error);
+  return Number(Boolean(service.error));
 }
 
 function gettarget(r) {
@@ -495,7 +505,8 @@ async function redirectpage(r, config) {
   if(service_name && service)
     r.headersOut["Set-Cookie"] = `${norenye_cookie}=${service_name}; Expires=Fri, 01 Jan 2100 00:00:00 +0000; Path=/; HttpOnly`;
   else {
-    r.headersOut["X-Norenye-Error"] = error;
+    if(boolparam(r.variables.norenye_xerror))
+      r.headersOut["X-Norenye-Error"] = String(error);
     uri = r.variables.norenye_uri||'/_/';
     delete r.variables.arg_url;
   }

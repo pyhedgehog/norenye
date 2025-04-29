@@ -9,6 +9,7 @@ description = "Dependency tracking for tests"
 python = "^3.12"
 pytest = "^8.3.5"
 pytest-docker-tools = "^3.1.9"
+pytest-nginx = "^1.1"
 
 [build-system]
 requires = ["poetry-core"]

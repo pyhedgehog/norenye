@@ -232,6 +232,19 @@ docker = ">=4.3.1"
 pytest = ">=6.0.1"
 
 [[package]]
+name = "pytest-nginx"
+version = "1.1"
+description = "nginx fixture for pytest"
+optional = false
+python-versions = "*"
+files = [
+    {file = "pytest_nginx-1.1-py2.py3-none-any.whl", hash = "sha256:b459519dd57c1ba5c21193898de79a4d2eabd9ddc19405ab298fa9eaa1bd2081"},
+]
+
+[package.dependencies]
+pytest = ">=3.0.0"
+
+[[package]]
 name = "pywin32"
 version = "310"
 description = "Python for Window Extensions"
@@ -297,4 +310,4 @@ zstd = ["zstandard (>=0.18.0)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "f1a7c78103fc66e69a3cfc542814d6215ba59403b56637b8c3c3c5cd1956b915"
+content-hash = "b128146cf4da8c08f745288131a839d6c8494323c9a400912cc8108f8c6d9285"
