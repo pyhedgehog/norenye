@@ -1,22 +1,22 @@
 import http.client
+import time
+import functools
+import contextlib
 import json
 import re
 import os
+import io
+import tarfile
+import pathlib
 import py.path
 import pytest
 import pytest_docker_tools as ptdt
-import pytest_nginx as ptnx
+import logging
 
+log = logging.getLogger('norenye.conftest')
 norenye_test_image = ptdt.build(
-    path=py.path.local(__file__).join(os.pardir),
+    path=os.fspath(py.path.local(__file__).dirpath().dirpath()),
 )
-
-norenye_test_container = ptdt.container(
-    image='{norenye_test_image.id}',
-    ports={'8080/tcp': None},
-)
-
-srvroot = None
 
 class ApproxRegexp:
     def __init__(self, pattern: re.Pattern|str|bytes):
@@ -32,85 +32,209 @@ class ApproxRegexp:
     def __repr__(self):
         return 'ApproxRegexp(%r)' % (self.pattern,)
 
-@pytest.fixture(scope="session")
-def nginx_server_root(tmpdir_factory):
-    global srvroot
-    srvroot = tmpdir_factory.mktemp("nginx-server-root")
-    altport = ptnx.factories.get_random_port("127.0.0.1")
-    tmpl = srvroot / 'nginx.conf.tmpl'
-    tests = py.path.local(__file__) / os.pardir
-    assert tests.join('nginx', 'nginx.conf').exists()
-    tmpl_data = ((tests / 'nginx' / 'nginx.conf')
-                     .read_text('utf8')
-                     .replace('/var/run/', '%TMPDIR%/')
-                     .replace('/var/log/nginx/', '%TMPDIR%/')
-                     .replace('/var/log/nginx/', '%TMPDIR%/')
-                     .replace('/etc/nginx/', '%SERVER_ROOT%/')
-                     .replace('/usr/share/nginx/', '%SERVER_ROOT%/')
-                     .replace('user  nginx;\n', 'daemon  off;\n')
-                     .replace('8080', '%PORT%')
-                     .replace('8001', str(altport))
-                     .replace('8002', str(altport+1))
-                     .replace('8003', str(altport+2))
-                     )
-    tmpl.write_text(tmpl_data, 'utf8')
-    assert tmpl.exists()
-    srvroot.join('norenye.json').write_text(
-        tests.join('nginx', 'norenye.json')
-             .read_text('utf8')
-             .replace(':8001', ':'+str(altport))
-             .replace(':8002', ':'+str(altport+1))
-             .replace(':8003', ':'+str(altport+2)), 'utf8')
-    tgt = srvroot.mkdir('html')
-    for f in (tests / 'nginx' / 'html').listdir(py.path.local.isfile):
-        f.copy(tgt)
-    tgt = srvroot.mkdir('html', '_').mkdir('static')
-    (tests / os.pardir / 'norenye.ico').copy(tgt / 'favicon.ico')
-    for f in (tests / 'nginx' / 'static').listdir(py.path.local.isfile):
-        f.copy(tgt)
-    (tests / os.pardir / 'js' / 'norenye.js').copy(srvroot.mkdir('js'))
-    return srvroot
-
-class nginx_template:
-    def __fspath__(self):
-        return os.fspath(srvroot / 'nginx.conf.tmpl')
-
-
-norenyeprocess = ptnx.factories.nginx_proc('nginx_server_root', config_template=nginx_template(), port='')
-
 @pytest.fixture
-def norenyeaddr(request, norenyekind):
-    if norenyekind == 'process':
-        norenyeprocess = request.getfixturevalue('norenyeprocess')
-        port = norenyeprocess.port
+def approxregexp():
+    return ApproxRegexp
+
+class NginxConfigError(RuntimeError): ...
+
+norenye_test_container = ptdt.container(
+    image='{norenye_test_image.id}',
+    name='norenye_pytest',
+    command='testapid.sh',
+    ports={'8080/tcp': None},
+    environment={'NORENYE_PERIODIC': '1', 'TESTAPI_START': '1'},
+    timeout=2
+)
+
+class NorenyeDockerTestAPI:
+    def __init__(self, ctr):
+        self.ctr = ctr
+    def _cmd(self, cmd):
+        assert self.ctr.status == "running"
+        res,output = self.ctr.exec_run(['testapictl.sh', cmd])
+        log.warning('$ %s %s ~~ %s\n%s', 'testapictl.sh', cmd, res, output)
+        assert res == 0
+        return output.decode('utf-8')
+    def info(self):
+        info = self._cmd('info')
+        log.info(f'info: info={info!r}')
+        return {k:bool(int(v)) for k,v in (s.split('=', 1) for s in info.split('\n') if s)}
+    @property
+    def status(self):
+        if self.ctr.status != "running":
+            return self.ctr.status
+        try:
+            info = self.info()
+        except Exception:
+            log.exception("Can't get nginx info:")
+        log.warning(f'status: info={info}')
+        if all(info.values()):
+            return 'ready'
+        if not info['confok']:
+            return 'conferr'
+        if not info['procok']:
+            return 'piderr'
+        log.error("Can't detect error precisely: %r", info)
+        return 'error'
+    def userstatus(self):
+        return self._cmd('status')
+    def start(self):
+        return self._cmd('start')
+    def stop(self):
+        return self._cmd('stop')
+    def _push_file(self, filename, value, uid=101, gid=101):
+        if False:
+            res,output = self.ctr.exec_run(['sh', '-c', 'echo -n "$value" > "$filename"'], environment=dict(filename=filename, value=value.replace('\\','\\\\')))
+            assert res == 0, output
+        else:
+            fp = io.BytesIO(value.encode('utf-8'))
+            tfp = io.BytesIO()
+            with tarfile.open(mode='w:', fileobj=tfp) as tar:
+                info = tarfile.TarInfo(filename)
+                info.size = len(fp.getvalue())
+                info.uid, info.gid = uid, gid
+                tar.addfile(info, fileobj=fp)
+            res = self.ctr._container.put_archive('/', tfp.getvalue())
+            assert res
+    def reload(self):
+        return self._cmd('reload')
+    def ensure(self, nginx_conf=None, norenye_json=None, want_reload=False):
+        log.debug(f'ensure: ctr.status={self.ctr.status}')
+        if self.ctr.status == "exited":
+            self.ctr.restart()
+        assert self.ctr.status == "running"
+        if nginx_conf:
+            want_reload = want_reload or self.get_files('/etc/nginx/nginx.conf')['nginx.conf'].decode('utf-8') != nginx_conf
+        if norenye_json:
+            want_reload = want_reload or self.get_files('/etc/nginx/norenye.json')['norenye.json'].decode('utf-8') != norenye_json
+        info = self.info()
+        if want_reload and info['confok'] and info.get('procok'):
+            log.warning('nginx stop before config rewrite')
+            self.stop()
+        if nginx_conf:
+            self._push_file('/etc/nginx/nginx.conf', nginx_conf)
+            log.debug('pushed nginx_conf')
+            assert self.get_files('/etc/nginx/nginx.conf')['nginx.conf'].decode('utf-8') == nginx_conf
+        if nginx_conf:
+            self._push_file('/etc/nginx/norenye.json', norenye_json)
+            log.debug('pushed norenye_json')
+            assert self.get_files('/etc/nginx/norenye.json')['norenye.json'].decode('utf-8') == norenye_json
+        info = self.info()
+        if not info['confok']:
+            if info.get('procok'):
+                self.stop()
+            raise NginxConfigError(self._cmd('test'))
+            return False
+        if all(info.values()):
+            return True
+        self.start()
+        info = self.info()
+        return all(info.values())
+    def get_files(self, files):
+        return self.ctr.get_files(files)
+    def get_external_addr(self):
+        port = self.ctr.ports['8080/tcp'][0]
         return f'localhost:{port}'
-    norenye_test_container = request.getfixturevalue('norenye_test_container')
-    port = norenye_test_container.ports['8080/tcp'][0]
-    addr = norenye_test_container.ips.primary
-    norenye_test_container.exec_run('curl -s http://127.0.0.1:8080/_/')
-    assert norenye_test_container.exec_run('curl -s http://127.0.0.1:8080/_/health')==(0,b'{"status": "ok"}')
-    return dict(dockerports=f'{addr}:8080', docker=f'localhost:{port}')[norenyekind]
+    def get_internal_addr(self):
+        addr = self.ctr.ips.primary
+        return f'{addr}:8080'
+
+class NorenyeAPIWrapper:
+    def __init__(self, norenyekind, api, nginx_conf, norenye_json):
+        self.api = api
+        self.norenyekind = norenyekind
+        self.nginx_conf = nginx_conf
+        self.norenye_json = norenye_json
+    def __enter__(self):
+        self.api.ensure(nginx_conf=self.nginx_conf, norenye_json=self.norenye_json)
+        return self
+    def __exit__(self, *exc_info):
+        self.api.stop()
+    def get_norenye_config_text(self):
+        # assert self.api.status == 'ready'
+        return self.api.get_files('/etc/nginx/norenye.json')['norenye.json'].decode('utf-8')
+    def get_norenye_config(self):
+        # assert self.api.status == 'ready'
+        return json.loads(self.get_norenye_config_text())
+    def get_nginx_config(self):
+        # assert self.api.status == 'ready'
+        return self.api.get_files('/etc/nginx/nginx.conf')['nginx.conf'].decode('utf-8')
+    @property
+    def status(self):
+        return self.api.status
+    def get_addr(self):
+        assert self.status == 'ready'
+        if self.norenyekind == 'docker':
+            return self.api.get_external_addr()
+        return self.api.get_internal_addr()
+    def get_client(self):
+        return http.client.HTTPConnection(self.get_addr())
 
 @pytest.fixture
-def norenyeclient(request, norenyeaddr):
-    return lambda:http.client.HTTPConnection(norenyeaddr)
+def norenye_test_api(request, norenye_test_container, norenyekind):
+    assert norenyekind != 'process'
+    #norenye_test_container = request.getfixturevalue('norenye_test_container')
+    return NorenyeDockerTestAPI(norenye_test_container)
 
 @pytest.fixture
-def norenyeconfig(request, norenyekind):
-    if norenyekind == 'process':
-        norenyeprocess = request.getfixturevalue('norenyeprocess')
-        srvroot = py.path.local(norenyeprocess.server_root)
-        return lambda:json.loads(srvroot.join('norenye.json').read_text('utf8'))
-    norenye_test_container = request.getfixturevalue('norenye_test_container')
-    norenyeaddr = request.getfixturevalue('norenyeaddr')
-    return lambda:json.loads(norenye_test_container.get_files('/etc/nginx/norenye.json')['norenye.json'])
+def norenye_get_tmpl():
+    root = pathlib.Path(__file__).parent / 'nginx'
+    def _norenye_get_tmpl(fn, *rest):
+        return root.joinpath(fn, *rest).read_text()
+    return _norenye_get_tmpl
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--norenye", action="store", default="docker", choices=("docker", "dockerports", "process"),
-        help="how to run/connect to nginx with norenye: docker, dockerports, process",
-    )
+@pytest.fixture
+def norenye_wrapper_tags(norenyekind, norenye_test_api, norenye_get_tmpl):
+    with NorenyeAPIWrapper(norenyekind, norenye_test_api,
+                           norenye_get_tmpl('nginx.0.conf'),
+                           norenye_get_tmpl('norenye.1.json')) as res:
+        #assert res.status == 'ready'
+        yield res
+
+@pytest.fixture
+def norenye_wrapper_notags(norenyekind, norenye_test_api, norenye_get_tmpl):
+    with NorenyeAPIWrapper(norenyekind, norenye_test_api,
+                           norenye_get_tmpl('nginx.0.conf'),
+                           norenye_get_tmpl('norenye.2.json')) as res:
+        #assert res.status == 'ready'
+        yield res
+
+@pytest.fixture
+def norenyeprocess():
+    pytest.skip('norenyeprocess not yet reimplemented')
+    # replace with patched cut-nginxproc.pytmp
+
+@contextlib.contextmanager
+def wrap_exception(tgt, catch=(Exception,)):
+    try:
+        yield
+    except catch as exc:
+        raise tgt from exc
+    
+#@pytest.fixture
+def asxfail0():
+    return wrap_exception(pytest.xfail.Exception)
+
+@pytest.fixture
+def asxfail():
+    @contextlib.contextmanager
+    def _asxfail(catch=(Exception,)):
+        try:
+            yield
+        except catch as exc:
+            pytest.xfail(str(exc))
+    return _asxfail
 
 @pytest.fixture
 def norenyekind(request):
     return request.config.getoption("--norenye")
+
+def pytest_addoption(parser):
+    default = "dockerports" if ptdt.utils.tests_inside_container() else "docker"
+    parser.addoption(
+        "--norenye", action="store", default=default, choices=("docker", "dockerports",
+        #"process"
+        ),
+        help="how to run/connect to nginx with norenye: docker, dockerports",
+    )

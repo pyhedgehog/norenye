@@ -1,0 +1,49 @@
+{
+  "services": {
+    "svc1": {
+      "target": "http://127.0.0.1:8001",
+      "hosts": [
+        "svc1.example.com",
+        "svc2.example.com"
+      ]
+    },
+    "svc2": {
+      "target": "http://127.0.0.1:8002",
+      "hosts": [
+        "svc2.example.com",
+        "svc3.example.com"
+      ],
+      "url": "file:///etc/nginx/svc2.json"
+    },
+    "svc3": {
+      "target": "http://127.0.0.1:8003",
+      "hosts": [
+        "svc3.example.com",
+        "svc1.example.com"
+      ],
+      "url": "http://127.0.0.1:8003/_urls.json",
+      "token": "333SERVICE3THREESERVICE3THREE333",
+      "secrets": ["bot123",""]
+    },
+    "rm-svc4": {
+      "target": "http://unix:/tmp/svc4.sock:",
+      "hosts": ["svc1.example.com"]
+    },
+    "int-svc4": {
+      "target": "@svc4",
+      "hosts": ["svc1.example.com"]
+    },
+    "sub-svc4": {
+      "target": "/svc4/",
+      "hosts": ["svc1.example.com"]
+    },
+    "sub-svc5": {
+      "target": "/svc5/",
+      "hosts": ["svc1.example.com"]
+    }
+  },
+  "token": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
+  "writeback": true,
+  "read_token": "ZYXWVUTSRQPNMLKJHGFEDCBA23456789",
+  "tokens": {"0ADMINADMINADMINADMINADMINADMIN0":{"*":"admin"}}
+}

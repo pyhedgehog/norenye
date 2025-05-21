@@ -8,7 +8,7 @@ Module name "nórenyë" can be translated as "dispatcher" (in the sense of "sort
 
 From client view all virtual hosts are separate.
 There can be several "services" behind any virtual host.
-If there are only one or client already selected "prefered" service all requests (except special - /_/ in example config) will be forwarded to it else selection page on /_/ will be shown.
+If there are only one service or client already selected "prefered" service all requests (except special - /_/ in example config) will be forwarded to it else selection page on /_/ will be shown.
 Selection page sets cookie with prefered service.
 
 ## Site admin view
@@ -27,23 +27,34 @@ js_import norenye.js;
 server {
     server_name *.example.com;
     js_set $norenye_fail norenye.getfail;  # Boolean. Set to 1 if no norenye cookie set and no default target for this host.
-    js_set $norenye_target norenye.getenvtarget;  # URL. Should be passed to proxy_pass.
-    set $norenye_config '/etc/nginx/snippets/norenye.json';  # path to config
+    js_set $norenye_target norenye.gettarget;  # URL. Should be passed to proxy_pass.
+    # See: https://github.com/nginx/njs/issues/907
+    # Normal Request object can use any nginx variable,
+    # but js_periodic creates pseudo-request that can see
+    # only variables from core (and js) module.
+    map - $norenye_config {
+        default '/etc/nginx/snippets/norenye.json';  # path to config
+    }
+    map - $norenye_shared_dict {
+        default norenye;  # must match `js_shared_dict_zone` directive above
+    }
     js_shared_dict_zone zone=norenye:1M;  # at least size of config
-    set $norenye_shared_dict norenye;  # must match `js_shared_dict_zone` directive above
-    #set $norenye_xerror 1;  # enable X-Norenye-Error header for config debugging
     location /_/static/ {
         alias "/opt/norenye/static/";  # path to css and other files you want to 
     }
     location @periodic {
         js_periodic norenye.periodic interval=60s;  # update hosts from `service.url` (see config below)
     }
+    location = /_/health { # may be implemented by norenye.[public_]api, but static one is faster
+      default_type application/json;
+      return 200 '{"status": "ok"}';
+    }
     location /_/ {
         js_content norenye.api;
         # If you want to expose api via another interface/vhost replace with:
-        #   js_content norenye.public_api;  # limit api to /_/, /_/index.html and /_/index.json
-        #   js_content norenye.public_html;  # limit api to /_/, /_/index.html
-        #   js_content norenye.admin_api;  # all api except /_/, /_/index.html and /_/index.json, '/_/' will return list of API endpoints, require token disregarding "read_token" config.
+        #   js_content norenye.public_api;  # limit api to /_/, /_/index.html, /_/index.json, /_/health and /_/redirect
+        #   js_content norenye.public_html;  # limit api to /_/, /_/index.html, /_/health and /_/redirect. Can be useful to hide metadata.
+        #   js_content norenye.admin_api;  # all api except /_/, /_/index.html, /_/index.json and /_/redirect, '/_/' will return list of API endpoints, require token disregarding "read_token" config.
         # you cat replace '/_/' in location with /something-other/ and:
         #   set $norenye_uri /something-other/;
         # also you can patch where `/-/redirect` will redirect:
@@ -54,6 +65,8 @@ server {
         #     Selection page. List of links to redirect page for each service.
         #   GET /_/index.json
         #     Selection info. Object of services with objects like {"service":<service-meta>, "host":<host-meta>} for current host in JSON format.
+        #   GET /_/health
+        #     Returns '{"status": "ok"}'.
         #   GET /_/redirect?set=servicename
         #     Redirect page. Will set cookie and redirect to root URI.
         #   PUT /_/service/
@@ -189,6 +202,7 @@ There also can be following template entries in which placeholders will not be p
 - List of vhosts:
   - Static (in config)
   - Dynamic (downloaded from URL)
+  - Passive (read from `file:///...` URL)
   - Controlled (can be manipulated via API)
 - Customizable UI:
   - Selector page can be templated
@@ -196,8 +210,58 @@ There also can be following template entries in which placeholders will not be p
 - Securable:
   - Sensetive parts of API protected by tokens
   - Tokens mechanism has precise rights management
-  - Sensetive parts of API can be exposed via another interface (i.e. via socket) or disabled completely
-  - Default setup is secure enough.
+  - Sensetive parts of API can be exposed via another interface (i.e. via unix socket) or disabled completely
+  - Default setup is secure enough
+- Customizable Ops:
+  - Two modes of forwarding:
+    1. Variables passed to `proxy_pass`/`try_files`.
+    2. Pass `location /` to `norenye.serviceforward` or just `norenye.api`.
+  - Selectable prefix (aka `/_/`) for API.
+  - Selectable API endpoints config:
+    1. Just `norenye.api` for whole `location /_/`.
+    2. Safe `norenye.public_api` or ever `norenye.public_html` (if your template doesn't uses `/_/index.json`).
+    3. Separate `norenye.admin_api` can be moved to other location (with `js_set $norenye_uri ...`) or server.
+    4. For precise config you can use individual functions behind each api endpoint.
+       ```
+       location /_/ {
+         location = /_/ {
+           js_body_content norenye.indexhtml;
+         }
+         location = /_/index.html {
+           js_body_content norenye.indexhtml;
+         }
+         location = /_/health {
+           default_type application/json;
+           return 200 '{"status": "ok"}';
+           #js_body_content norenye.healthcheck;
+         }
+         location = /_/redirect {
+           js_body_content norenye.redirectpage;
+         }
+         location = /_/index.json {
+           js_body_content norenye.indexjson;
+         }
+         location = /_/config.json {
+           js_body_content norenye.configjson;
+         }
+         location = /_/service/ {
+           js_body_content norenye.apiservices;
+         }
+         location ~ /_/service/([^/]+)/ {
+           js_body_content norenye.apiservicehosts;
+         }
+         location ~ /_/service/([^/]+)/([^/]+)/ {
+           js_body_content norenye.apihost;
+         }
+       }
+       ```
+       TODO: Write example configs for each mentioned case.
+
+## Known issues
+
+- Nginx reload plays bad with caching if norenye.json file was externally changed.
+  You should either change it via API, or stop nginx, change file, start nginx.
+  https://github.com/nginx/njs/issues/914
 
 ## For developer
 
@@ -205,28 +269,122 @@ Tests uses [`pytest`](https://pytest.org/). Beware.
 
 Tests can be configured via `--norenye` argument:
 - `docker` or `dockerports` uses [`docker`](https://pypi.org/project/pytest-docker-tools/) plugin.
-- `process` uses [`nginx`](https://pypi.org/project/pytest-nginx/) plugin and requires installed nginx with NJS module.
+- DISABLED: `process` uses [`nginx`](https://pypi.org/project/pytest-nginx/) plugin and requires installed nginx with NJS module.
+Default depends on pytest execution context.
 
 ### TODO
 
+**Before 0.2**:
+- Test for:
+  - HTTP:
+    - [x] `* /{forward-path}`
+    - [x] `GET /_/`
+    - [x] `GET /_/index.html`
+    - [x] `GET /_/index.json`
+    - [x] `GET /_/health`
+    - [x] `GET /_/redirect?set={service-name}[&uri={path}]`
+    - [x] `PUT /_/service/`
+    - [ ] `GET /_/service/{service-name}/`
+    - [ ] `POST /_/service/{service-name}/`
+    - [ ] `DELETE /_/service/{service-name}/`
+    - [ ] `GET /_/service/{service-name}/{host-name}`
+    - [ ] `PUT /_/service/{service-name}/{host-name}`
+    - [ ] `POST /_/service/{service-name}/{host-name}`
+    - [ ] `DELETE /_/service/{service-name}/{host-name}`
+    - [x] `GET /_/config.json`
+    - [x] `GET /_/_session.json`
+    - [x] `GET /_/_debug.json`
+  - functions:
+    - [ ] getfail
+    - [ ] gettarget
+    - [ ] periodic
+    - [ ] api
+    - [ ] public_api
+    - [ ] public_html
+    - [ ] admin_api
+    - [ ] redirectpage
+    - [ ] serviceforward
+    - [ ] indexhtml
+    - [ ] indexjson
+    - [ ] public_configjson
+    - [ ] configjson
+    - [ ] adminapijson
+    - [ ] apiservices
+    - [ ] apiservice
+    - [ ] apiservicehosts
+    - [ ] apihost
+    - [ ] sessionjson
+    - [ ] dbgpage
+  - Misc:
+    - [ ] Tokens support
+    - [ ] Tags support
+
 **Before 1.0**:
 
-- More control for "default service". To start with - priority.
-- Complete set of APIs.
+- Think on form of distribution. npm, apt, webi?
+- Document installation.
 - Write tests for all APIs.
-- Autotests against different versions of Nginx/Angie + NJS/QJS.
+- Autotests against different versions of Nginx/Angie/OpenResty + NJS/QJS.
+- More control for "default service". To start with - priority.
+- Document interface in README:
+  - HTTP endpoints
+  - API functions (group by directive - js_set, js_content, js_periodic)
+  - Nginx variables (with limitations - used in periodic can be `set`)
+  - Environment variables
+  - Attributes of `norenye.json` objects (root config, service)
+- Alternative config examples:
+  - Minimal (no api, no index.html, only redirect)
+  - Separate (admin api via unix socket)
+  - etc.
+- Choose autodoc (jsdoc?)
 
 **Future**:
 
-- `js_body_filter` to add to site floating menu to switch services.
 - Prometheus metrics.
+- OpenAPI specs (aka Swagger) with respect to `$norenye_uri`.
+- Think about webpack (as soon as we've split code to modules).
+- `js_body_filter` to add to site floating menu to switch services.
+- Reintroduce "groups of hosts" from dre-switch. I.e. feature to set cookie for several hosts at once. Aka SSO.
+- Reintroduce hashed cookie. This _seems_ more secure, but user always can get list of services from /_/index.html, so it's "security by obscurity". I.e. useless.
+- Tests using direct njs/qjs exec (without nginx at all). See `js/cmd.js`.
+- Customize what variable should be treated as "hostname".
+  Right now we use `r.variables.host` (aka `$host`),
+  but there are `$http_host`, `$ssl_server_name` and so on.
+- Support glob and/or regexp matching of hosts.
+- Create temp token - via API and/or local file.
+- Load testing.
+- Test support for different services (behind proxy_pass). Prefer popular or HTTP-complicated:
+  - WebDAV (Nginx/rclone)
+  - `rclone serve rcd` with WebUI
+  - S3 (minio/rclone)
+  - Portainer
+  - Saltcorn
+- Document how to configure clients (i.e. for S3) to pass required cookie.
+- Alternative mode of operation - via static nginx config ala map directives generated from `norenye.json`:
+  ```
+  map $cookie_norenye@$host $norenye_target {
+    include norenye-generated-map.conf;
+    default '';
+  }
+  map $norenye_target $norenye_fail {
+    '' 1;
+    default 0;
+  }
+  ```
 
-### NOGO
+### Not in scope
 
-- Plugins. Security is our first priority.
+Things that wouldn't be implemented unless heavy reasons will be provided:
+
+- Plugins (security is our first priority).
+- Remote control from Norenye to backend services (prefer not to be bound to specific protocols).
+- Several templates for different hosts/entrypoints/whatever (there are `/_/index.json` and browser-side JS for such things).
+- Gather hosts from subprocess. Bad idea - NJS has no such feature + we have API for this. At last you can expose admin API via local unix-socket server only.
 
 ### Ideas for PRs
 
 - Rewrite README. Write more docs at all.
 - Write more tests.
 - Implement any item in [#TODO].
+- Ideas how to implement "one-time link to specific service" (without touching cookie set).
+- Ideas to improve "protocol" of `service.url`.

@@ -1,0 +1,1 @@
+{"name":"svc4","target":"http://unix:/tmp/svc4.sock:","hosts":"svc1.example.com"}

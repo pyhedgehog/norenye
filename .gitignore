@@ -129,3 +129,8 @@ package-lock.json
 !packages/saltcorn-builder/package-lock.json
 !/package-lock.json
 plugins_folder/
+.node-version
+.python-version
+
+cut-*
+*.pytmp

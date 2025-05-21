@@ -1,0 +1,46 @@
+{
+  "services": {
+    "svc1": {
+      "target": "http://127.0.0.1:8001",
+      "hosts": {
+        "svc1.example.com": {"tags": "host1"},
+        "svc2.example.com": {"tags": "host2"}
+      },
+      "metadata": {"tags":"svc1"}
+    },
+    "svc2": {
+      "target": "http://127.0.0.1:8002",
+      "metadata": {"tags":"svc2"},
+      "hosts": [
+        "svc2.example.com",
+        "svc3.example.com"
+      ],
+      "url": "file:///etc/nginx/svc2.json"
+    },
+    "svc3": {
+      "target": "http://127.0.0.1:8003",
+      "hosts": [
+        "svc3.example.com",
+        "svc1.example.com"
+      ],
+      "url": "http://127.0.0.1:8003/_urls.json",
+      "token": "333SERVICE3THREESERVICE3THREE333",
+      "secrets": ["bot123",""]
+    }
+  },
+  "token": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
+  "writeback": true,
+  "read_token": "ZYXWVUTSRQPNMLKJHGFEDCBA23456789",
+  "tokens": {"0ADMINADMINADMINADMINADMINADMIN0":{"*":"admin"}},
+  "template": {
+    "error": "<html><head><title>Error on $host</title></head><body>\n<p>$error</p></body></html>",
+    "head": "<html><head><title>Select env for host $host</title></head><body>\n<ul>",
+    "item": "<li><a href=\"$redirect_url\">$service</a> ($tags)</li>",
+    "cur-item": "<li><b><a href=\"$redirect_url\">$service</a></b> ($tags)</li>",
+    "item-sep": "\n",
+    "tail": "\n</ul>\n</body></html>\n",
+    "tags": "$tags",
+    "tag": "$tag",
+    "tag-sep": ", "
+  }
+}
