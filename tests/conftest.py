@@ -8,14 +8,15 @@ import os
 import io
 import tarfile
 import pathlib
-import py.path
 import pytest
 import pytest_docker_tools as ptdt
 import logging
 
 log = logging.getLogger('norenye.conftest')
 norenye_test_image = ptdt.build(
-    path=os.fspath(py.path.local(__file__).dirpath().dirpath()),
+    path=os.fspath(pathlib.Path(__file__).parent.parent),
+    tag='norenye-test:pytest',
+    scope='session'
 )
 
 class ApproxRegexp:
@@ -44,7 +45,8 @@ norenye_test_container = ptdt.container(
     command='testapid.sh',
     ports={'8080/tcp': None},
     environment={'NORENYE_PERIODIC': '1', 'TESTAPI_START': '1'},
-    timeout=2
+    timeout=2,
+    scope='session'
 )
 
 class NorenyeDockerTestAPI:
@@ -101,7 +103,10 @@ class NorenyeDockerTestAPI:
         return self._cmd('reload')
     def ensure(self, nginx_conf=None, norenye_json=None, want_reload=False):
         log.debug(f'ensure: ctr.status={self.ctr.status}')
-        if self.ctr.status == "exited":
+        if self.ctr.status == "paused":
+            self.ctr._container.unpause()
+            self.ctr.reload()
+        if self.ctr.status in {"exited", "created"}:
             self.ctr.restart()
         assert self.ctr.status == "running"
         if nginx_conf:
@@ -141,11 +146,12 @@ class NorenyeDockerTestAPI:
         return f'{addr}:8080'
 
 class NorenyeAPIWrapper:
-    def __init__(self, norenyekind, api, nginx_conf, norenye_json):
+    def __init__(self, norenyekind, api, nginx_conf=None, norenye_json=None, **flags):
         self.api = api
         self.norenyekind = norenyekind
         self.nginx_conf = nginx_conf
         self.norenye_json = norenye_json
+        self.__dict__.update(flags)
     def __enter__(self):
         self.api.ensure(nginx_conf=self.nginx_conf, norenye_json=self.norenye_json)
         return self
@@ -170,37 +176,50 @@ class NorenyeAPIWrapper:
         return self.api.get_internal_addr()
     def get_client(self):
         return http.client.HTTPConnection(self.get_addr())
+    @contextlib.contextmanager
+    def revertfinally(self):
+        norenye_json = self.norenye_json or self.get_norenye_config_text()
+        try:
+            yield
+        finally:
+            self.api.ensure(nginx_conf=self.nginx_conf, norenye_json=norenye_json)
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def norenye_test_api(request, norenye_test_container, norenyekind):
     assert norenyekind != 'process'
     #norenye_test_container = request.getfixturevalue('norenye_test_container')
     return NorenyeDockerTestAPI(norenye_test_container)
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def norenye_get_tmpl():
     root = pathlib.Path(__file__).parent / 'nginx'
     def _norenye_get_tmpl(fn, *rest):
         return root.joinpath(fn, *rest).read_text()
     return _norenye_get_tmpl
 
-@pytest.fixture
+@pytest.fixture(name='NorenyeAPIWrapper', scope='session')
+def fixture_NorenyeAPIWrapper():
+    return NorenyeAPIWrapper
+
+@pytest.fixture(scope='class')
 def norenye_wrapper_tags(norenyekind, norenye_test_api, norenye_get_tmpl):
     with NorenyeAPIWrapper(norenyekind, norenye_test_api,
-                           norenye_get_tmpl('nginx.0.conf'),
-                           norenye_get_tmpl('norenye.1.json')) as res:
+                           norenye_get_tmpl('nginx.def.conf'),
+                           norenye_get_tmpl('norenye.tags.json'),
+                           tags=True) as res:
         #assert res.status == 'ready'
         yield res
 
-@pytest.fixture
+@pytest.fixture(scope='class')
 def norenye_wrapper_notags(norenyekind, norenye_test_api, norenye_get_tmpl):
     with NorenyeAPIWrapper(norenyekind, norenye_test_api,
-                           norenye_get_tmpl('nginx.0.conf'),
-                           norenye_get_tmpl('norenye.2.json')) as res:
+                           norenye_get_tmpl('nginx.def.conf'),
+                           norenye_get_tmpl('norenye.notags.json'),
+                           tags=False) as res:
         #assert res.status == 'ready'
         yield res
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def norenyeprocess():
     pytest.skip('norenyeprocess not yet reimplemented')
     # replace with patched cut-nginxproc.pytmp
@@ -216,7 +235,7 @@ def wrap_exception(tgt, catch=(Exception,)):
 def asxfail0():
     return wrap_exception(pytest.xfail.Exception)
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def asxfail():
     @contextlib.contextmanager
     def _asxfail(catch=(Exception,)):
@@ -226,7 +245,7 @@ def asxfail():
             pytest.xfail(str(exc))
     return _asxfail
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def norenyekind(request):
     return request.config.getoption("--norenye")
 

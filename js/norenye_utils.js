@@ -31,7 +31,8 @@ if (!Array.prototype.some)
 
 import fs from 'fs';
 
-const url_re = /^(?:(?:(?<scheme>[^:/]*):)?\/\/(?<netloc>(?:(?<authinfo>(?<username>[^/@:]*)(?::(?<password>[^/@]*))?)@)?(?<hostinfo>(?i:unix:)(?<unixpath>[^:]+):|(?!(?i:unix:))\[?(?<hostname>[^/]*?)\]?(?::(?<port>[0-9]*))?)))?(?<path>(?<base>\/(?:.*\/)?)[^/]*)?$/;
+// QJS support for group modifiers added to source at 2025-05-16 (f95b8ba1b), but as of 2025-05-27 change not yet released.
+const url_re = /^(?:(?:(?<scheme>[^:/]*):)?\/\/(?<netloc>(?:(?<authinfo>(?<username>[^/@:]*)(?::(?<password>[^/@]*))?)@)?(?<hostinfo>(?:unix:)(?<unixpath>[^:]+):|(?!(?:unix:))\[?(?<hostname>[^/]*?)\]?(?::(?<port>[0-9]*))?)))?(?<path>(?<base>\/(?:.*\/)?)[^/]*)?$/i;
 const nohostschemes = Object.fromKeys(['mailto']);
 
 function copyObject(o, keys) {

@@ -9,6 +9,7 @@ import configfuncs from 'norenye_config.js';
 //const fs = require("fs");
 //const qs = require("querystring");
 
+const norenye_version = '0.0.2';
 const nocache = Symbol('nocache');
 const log = utils.log;
 
@@ -61,8 +62,8 @@ function getcache(r, config_fn) {
 
 var request_config = {};
 
-function getconfig(r) {
-  if(r.variables.request_id in request_config)
+function getconfig(r, force_reload) {
+  if(!force_reload && (r.variables.request_id in request_config))
     return request_config[r.variables.request_id];
   var cr = r;
   while(cr.parent) {
@@ -71,9 +72,9 @@ function getconfig(r) {
       return request_config[cr.variables.request_id];
   }
   var config_fn = getconfigfile(r);
-  var config = getcache(r, config_fn);
+  var config = force_reload?null:getcache(r, config_fn);
   var cache_absent = config === nocache;
-  if(config === null || cache_absent) {
+  if(force_reload || config === null || cache_absent) {
     var config0 = configfuncs.readconfig(config_fn);
     if(typeof(config0.writeback) === 'string') {
       var config1 = configfuncs.readconfig(config0.writeback);
@@ -102,6 +103,31 @@ function onconfigchange(r, config) {
   request_config[r.variables.request_id] = config;
 }
 
+async function reloadconf(r, config0) {
+  var from_periodic = r[Symbol.toStringTag] === 'PeriodicSession';
+  if(!from_periodic) {
+    var rights = getrights(r, config, '*', true);
+    if(!('admin' in configfuncs.rights_order[rights]))
+      return await needauthpage(r, config, '*');
+  }
+  config0 = config0 || getconfig(r);
+  var config = getconfig(r, true);
+  var changed = JSON.stringify(config0)!=JSON.stringify(config), pulled=false;
+  if(Object.values(config.services).filter(svc=>svc.url&&!svc.hosts).length>1) {
+    _periodic(r, config);
+    pulled = true;
+  }
+  if(from_periodic) {
+    if(changed)
+      log.warn('reloadconf: config changed');
+    if(pulled)
+      log.warn('reloadconf: hosts pulled');
+  } else {
+    r.headersOut['X-Norenye-Error'] = (changed?'changed':'unchanged')+(pulled?'+pulled':'');
+    r.return(204);
+  }
+}
+
 async function periodic(r) {
   if(r[Symbol.toStringTag] !== 'PeriodicSession') {
     log.error(`ERROR: periodic() must be run from js_periodic statement.`);
@@ -119,7 +145,11 @@ async function periodic(r) {
     });
     return;
   }
-  var config = getconfig(r), dirty=false, nservices = Object.entries(config.services).length;
+}
+
+async function _periodic(r, config) {
+  config = config || getconfig(r);
+  var dirty=false, nservices = Object.entries(config.services).length;
   log.debug(`periodic: config.services=${JSON.stringify(config.services)}`);
   var urls = Object.entries(config.services).map(function(it,i) {
     if(it[1].url)
@@ -133,13 +163,16 @@ async function periodic(r) {
     log.debug(`periodic: ${i}/${urls.length}/${nservices}: ${njs.dump(urlo)}`);
     try {
       var hosts;
-      if(urlo.scheme === 'file')
-        hosts = await fs.promises.readFile(urlo.path);
-      else {
-        var headers = new Headers({'Host':urlo.hostinfo});
+      if((urlo.scheme === 'file' && urlo.path)||(!urlo.scheme && urlo.rel)) {
+        var filename = urlo.scheme=='file'?urlo.path:urlo.rel;
+        var s = await fs.promises.readFile(filename,{encoding:"utf8"});
+        hosts = JSON.parse(s);
+        log.error(`norenye.periodic: fs.promises.readFile(${urlo.path})->${njs.dump(hosts)}`);
+      } else {
+        var headers = new Headers({'Host':urlo.hostinfo,'User-Agent':`norenye/${norenye_version} (periodic)`});
         //log.debug(`periodic: headers=${njs.dump(headers)}`);
         hosts = await (await ngx.fetch(url, {headers})).json();
-        log.error(`norenye.periodic: ${url}->${njs.dump(hosts)}`);
+        log.error(`norenye.periodic: ngx.fetch(${url})->${njs.dump(hosts)}`);
       }
       if(typeof(hosts)!='object' || hosts===null)
         throw new Error(`Invalid hosts type ${(hosts===null)?'null':typeof(hosts)}`);
@@ -175,7 +208,7 @@ function getsessionservice(r, config, service_name, return_error) {
   if(service_name) {
     service = config.services[service_name] || null;
     if(!service) {
-      log.test(`Norenye cookie set to ${service_name}, but there are no such service configured.`);
+      log.test(`Norenye cookie set to ${service_name}, but there are no such service configured (only ${Object.keys(config.services)}).`);
       if(return_error)
         return {error:'no_service', name:service_name};
     } else
@@ -183,7 +216,7 @@ function getsessionservice(r, config, service_name, return_error) {
   } else if(return_error)
     return {error:'no_cookie', name:service_name};
   if(service && service.hosts && !(r.variables.host in service.hosts)) {
-    log.test(`Norenye cookie set to ${service_name}, but this service has no host ${r.variables.host} configured.`);
+    log.test(`Norenye cookie set to ${service_name}, but this service has no host ${r.variables.host} configured (only ${Object.keys(service.hosts)}).`);
     if(return_error)
       return {error:'no_host', name:service_name};
     service = null;
@@ -225,7 +258,14 @@ async function sendjson(r, obj, postprocess) {
   if(postprocess)
     res = await postprocess(res);
   r.headersOut['Content-Type'] = "application/javascript";
-  r.return(obj.error?400:200, res);
+  r.return((obj||{}).error?400:200, res);
+}
+
+function gethostbase(r) {
+  const defport = r.variables.scheme=='https'?'443':'80';
+  const host = r.variables.http_host||r.variables.host;
+  const skipport = /:/.test(r.variables.http_host) || (r.variables.server_port===defport);
+  return `${r.variables.scheme}://${host}${skipport?'':`:${r.variables.server_port}`}`;
 }
 
 async function needauthpage(r, config, service_name) {
@@ -233,7 +273,7 @@ async function needauthpage(r, config, service_name) {
     config = getconfig(r);
   service_name = service_name || '*';
 
-  r.headersOut['WWW-Authenticate'] = `Bearer realm="${r.variables.scheme}://${r.variables.http_host}${getbase(r)}",service="${service_name}"`;
+  r.headersOut['WWW-Authenticate'] = `Bearer realm="${gethostbase(r)}${getapibase(r)}",service="${service_name}"`;
   return await failpage(r, config, 'Authentication required.', 401);
 }
 
@@ -401,16 +441,14 @@ function apply_template(tmpl, vars, apply_meta) {
   return tmpl;
 }
 
-function getbase(r) {
-  if('norenye_uri' in r.variables)
-    return String(r.variables.norenye_uri||'/_/');
-  return '/_/';
+function getapibase(r) {
+  return String(r.variables.norenye_uri||'/_/');
 }
 
 function getredirectbase(r, config) {
   if(!config)
     throw new Error("Internal error (no config)");
-  return getbase(r)+'redirect?set=';
+  return getapibase(r)+'redirect?set=';
 }
 
 async function indexhtml(r, config) {
@@ -472,7 +510,7 @@ async function redirectpage(r, config) {
   var service_name = r.variables.arg_set;
   var service = service_name?getsessionservice(r, config, service_name, true):{error:'no_set_arg'};
   var norenye_cookie = r.variables.norenye_cookie || 'norenye';
-  var url = `${r.variables.scheme}://${r.variables.http_host}`;
+  var url = `${gethostbase(r)}`;
   log.debug('redirectpage: service='+JSON.stringify({service_name,service}));
   if(!service.error) {
     r.headersOut["Set-Cookie"] = `${norenye_cookie}=${service_name}; Expires=Fri, 01 Jan 2100 00:00:00 +0000; Path=/; HttpOnly`;
@@ -480,7 +518,7 @@ async function redirectpage(r, config) {
   } else {
     if(utils.runmode.test)
       r.headersOut["X-Norenye-Error"] = String(service.error);
-    uri = getbase(r);
+    uri = getapibase(r);
     url = url+uri;
   }
   //r.headersOut["Location"] = url;
@@ -495,12 +533,15 @@ async function serviceforward(r, config) {
   log.debug('serviceforward: service='+JSON.stringify({service_name,service}));
 
   if(service.error) {
-    var url = `${r.variables.scheme}://${r.variables.http_host}${getbase(r)}`;
+    var url = `${gethostbase(r)}${getapibase(r)}`;
+    var uri = r.args.uri || r.variables.norenye_redirect || '/';
     log.debug(`serviceforward: error=${service.error}, url=${url}`);
+    if(uri != '/')
+      url += '?uri='+uri;
     if(utils.runmode.test)
       r.headersOut["X-Norenye-Error"] = String(service.error);
     //r.headersOut["Location"] = url;
-    r.return(307, url);
+    r.return(303, url);
   } else if(String(service.target).startsWith('@')) {
     return r.internalRedirect(service.target);
   } else if(String(service.target).startsWith('/')) {
@@ -520,7 +561,7 @@ async function serviceforward(r, config) {
     //log.debug(`serviceforward: rawHeadersIn=${JSON.stringify(r.rawHeadersIn)}`);
     var headers = new Headers(r.headersIn), body = r.requestText;
     headers.set('Host', r.headersIn.host || utils.urlparse(url).hostinfo);
-    log.debug(`serviceforward: headers=${njs.dump(headers)}, body=${body.length}`);
+    log.debug(`serviceforward: headers=${njs.dump(headers)}, body=${body&&body.length}`);
     var reply = await ngx.fetch(url, {method:r.method, headers, body});
     //log.debug(`serviceforward: reply=${JSON.stringify(reply)}`);
     reply.headers.forEach((n)=>{
@@ -531,8 +572,8 @@ async function serviceforward(r, config) {
         r.headersOut[n] = l;
     });
     //log.debug(`serviceforward: rawHeadersOut=${JSON.stringify(r.rawHeadersOut)}`);
-    var body = await reply.text();
-    r.return(reply.status, body);
+    var outbody = await reply.text();
+    r.return(reply.status, outbody);
   }
 }
 
@@ -635,11 +676,11 @@ async function apiservicehosts(r, config, service_name) {
   if(!(service_name in config.services))
     return await failpage(r, config, `Not exist.`, 404);
   if((r.method==='GET')||(r.method==='HEAD'))
-    return await sendjson(r, config[service_name].hosts);
+    return await sendjson(r, config.services[service_name].hosts);
   var dirty = true;
-  if(r.method=='DELETE') {
+  if(r.method==='DELETE') {
     delete config.services[service_name];
-  } else {
+  } else if(r.method==='POST') {
     var data;
     try {
       data = JSON.parse(r.requestBuffer);
@@ -651,6 +692,8 @@ async function apiservicehosts(r, config, service_name) {
       return await failpage(r, config, `Invalid data.`, 400);
     dirty = JSON.stringify(config.services[service_name].hosts) !== JSON.stringify(hosts);
     config.services[service_name].hosts = hosts;
+  } else {
+    return await failpage(r, config, `Internal error: r.method=${r.method}`, 400);
   }
   if(dirty)
     onconfigchange(r, config);
@@ -662,36 +705,41 @@ async function apihost(r, config, service_name, host_name) {
     config = getconfig(r);
   const update_methods = ['PUT', 'POST', 'DELETE'];
   var wantupdate = r.method in Object.fromKeys(update_methods);
+  log.debug(`apihost: wantupdate=${wantupdate}, r.method=${r.method}, service_name=${service_name}, host_name=${host_name}`);
   if(!methodallowed(r, config, ['GET', update_methods].flat())) return;
   var rights = getrights(r, config, service_name);
   if(!((wantupdate?'update':'read') in configfuncs.rights_order[rights]))
     return await needauthpage(r, config, service_name);
   if(!(service_name in config.services))
     return await failpage(r, config, `Not exist.`, 404);
+  var service = config.services[service_name];
+  log.debug(`apihost: service=${njs.dump(service)}, r.requestBuffer=${r.requestBuffer}`);
   if(r.method==='PUT') {
-    if(host_name in config.services[service_name])
+    if(host_name in service.hosts)
       return await failpage(r, config, `Already exists.`, 409);
   } else {
-    if(!(host_name in config.services[service_name]))
+    if(!(host_name in service.hosts))
       return await failpage(r, config, `Not exist.`, 404);
   }
   if((r.method==='GET')||(r.method==='HEAD'))
-    return await sendjson(r, config[service_name].hosts[host_name]);
+    return await sendjson(r, service.hosts[host_name]);
   var dirty = true;
   if(r.method=='DELETE') {
-    delete config[service_name].hosts[host_name];
+    delete config.services[service_name].hosts[host_name];
   } else {
     var data;
     try {
-      if(b.length===0)
+      if(r.content_length===0)
         data = null;
       else
         data = JSON.parse(r.requestBuffer);
     } catch(e) {
       return await failpage(r, config, `Invalid data: ${e}`, 400);
     }
-    dirty = JSON.stringify(config[service_name].hosts[host_name]) !== JSON.stringify(data);
-    config[service_name].hosts[host_name] = data;
+    data = configfuncs.enrichhosts({[host_name]: data})[host_name];
+    log.debug(`apihost: data=${njs.dump(data)}`)
+    dirty = JSON.stringify(service.hosts[host_name]) !== JSON.stringify(data);
+    config.services[service_name].hosts[host_name] = data;
   }
   if(dirty)
     onconfigchange(r, config);
@@ -706,7 +754,8 @@ async function dbgpage(r) {
   var res = {error_log_path: ngx.error_log_path,
       req: Object.assign({},r,{variables:utils.copyObject(r.variables,
         ['host','hostname','args','http_host','http_user_agent','http_accept','uri','request_uri','document_uri',
-         'request','query_string','realpath_root','request_method','scheme','server_name','server_port','ssl_server_name',
+         'request','query_string','realpath_root','request_filename','request_body','request_method',
+         'scheme','server_name','server_port','ssl_server_name',
          Object.keys(r.args).map((a)=>`arg_${utils.str2varname(a)}`),
          Object.keys(r.headersIn).map((a)=>`http_${utils.str2varname(a)}`),
          [r.headersIn['cookie']].flat(2).filter((it)=>it).map((a)=>`cookie_${utils.str2varname(a.split('=')[0])}`),
@@ -740,7 +789,7 @@ async function dbgpage(r) {
 
 async function apijson(r, config, apikind) {
   if(!methodallowed(r, config)) return;
-  const baseurl = `${r.variables.scheme}://${r.variables.http_host}${getbase(r)}`;
+  const baseurl = `${gethostbase(r)}${getapibase(r)}`;
   const debug_url = utils.runmode.dev?`${baseurl}_debug.json`:undefined;
   const all_api = {
     health_url:`${baseurl}health`,
@@ -780,60 +829,106 @@ async function adminapijson(r, config) {
   return apijson(r, config, 'admin_api');
 }
 
+function existsFileSync(fn) {
+  try {
+    var stat = fs.statSync(fn, {throwIfNoEntry:true})
+    log.debug(`existsFileSync: fn=${fn}, mode=0o${stat.mode.toString(8)}, ${Boolean(stat.mode&0o444)}, ${stat.isFile()}`)
+    return stat.isFile() && Boolean(stat.mode&0o444);
+    // fs.constants.R_OK);
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+const mimeMap = {
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.html': 'text/html',
+  '.txt': 'text/plain',
+  '.gif': 'image/gif',
+  '.ico': 'image/x-windows-icon',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+}
+
+async function _staticfile(r, file, ext) {
+  if(!ext)
+    ext = ((/^.*(?<ext>\.[^.]*)$/.exec(file)||{}).groups||{}).ext||null;
+  log.debug(`staticfile: file=${file}, ext=${ext} (${ext in mimeMap})`);
+  if(ext in mimeMap)
+    r.headersOut['Content-Type'] = mimeMap[ext];
+  return r.return(200, fs.readFileSync(file));
+}
+
+async function staticfile(r, config) {
+  if(existsFileSync(r.variables.request_filename))
+    return await _staticfile(r, r.variables.request_filename);
+  return await failpage(r, config, `Unknown URL ${r.uri.split('?')[0]}.`, 404);
+}
+
 async function norenye_api(r, config, apikind) {
   log.debug(`r@${r[Symbol.toStringTag]}: ${r.method} ${r.uri}`);
   if(!config)
     config = getconfig(r);
-  var baseuri = getbase(r);
+  var baseuri = getapibase(r);
   var baselen = baseuri.length;
   var uri = r.uri, uriparts, service_name, rights;
+  var run = (f)=>{log.debug(`norenye_api[${apikind}]->${f.name}`);return f;};
   apikind = apikind || 'api';
+  if((uri === '/favicon.ico') && existsFileSync(r.realpath_root+getapibase(r)+'static/favicon.ico'))
+    return await run(_staticfile)(r, r.realpath_root+getapibase(r)+'static/favicon.ico');
   if(!uri.startsWith(baseuri)) {
     if(apikind === 'admin_api')
-      return await failpage(r, config, `Unknown URL ${r.uri.split('?')[0]}.`, 404);
-    return await serviceforward(r, config);
+      return await run(failpage)(r, config, `Unknown URL ${r.uri.split('?')[0]}.`, 404);
+    return await run(serviceforward)(r, config);
   }
   uri = uri.slice(baselen).split('?')[0];
   if(apikind === 'admin_api') {
     uriparts = uri.split('/').filter((s)=>(s));
     service_name = (uriparts[0] === 'service' && uriparts.length>1)?uriparts[1]:'*';
     if(!gettoken(r))
-      return await needauthpage(r, config, service_name);
+      return await run(needauthpage)(r, config, service_name);
     rights = getrights(r, config, service_name, true);
   }
   if(uri === 'health')
-    return healthcheck(r)
+    return run(healthcheck)(r)
   if(apikind !== 'admin_api') {
     if((apikind !== 'public_html') && (uri === 'index.json'))
-      return await indexjson(r, config);
+      return await run(indexjson)(r, config);
     if(uri === 'redirect')
-      return await redirectpage(r, config);
+      return await run(redirectpage)(r, config);
     if((uri === '') || (uri === 'index.html'))
-      return await indexhtml(r, config);
+      return await run(indexhtml)(r, config);
   }
   if((apikind === 'admin_api') && (uri === ''))
-    return await adminapijson(r, config);
+    return await run(adminapijson)(r, config);
+  if((apikind === 'admin_api') && (uri === '_reloadconf'))
+    return await run(reloadconf)(r, config);
   if(uri === '_api.json')
-    return await apijson(r, config, apikind);
+    return await run(apijson)(r, config, apikind);
   if(uri === '_noapi.json')
-    return await apijson(r, config, 'noapi');
+    return await run(apijson)(r, config, 'noapi');
   if((apikind !== 'public_html') && (apikind !== 'public_api')) {
     if(uri === 'config.json')
-      return await configjson(r, config, rights);
+      return await run(configjson)(r, config, rights);
     if((uri === '_debug.json') && utils.runmode.dev)
-      return await dbgpage(r);
+      return await run(dbgpage)(r);
     if((uri === '_session.json') && utils.runmode.test)
-      return await sessionjson(r, config);
+      return await run(sessionjson)(r, config);
     uriparts = uriparts || uri.split('/').filter((s)=>(s));
     if(uriparts[0] === 'service' && uriparts.length===1)
-      return await apiservices(r, config);
+      return await run(apiservices)(r, config);
     if(uriparts[0] === 'service' && uriparts.length===2)
-      //return await apiservice(r, config, uriparts[1]);
-      return await apiservicehosts(r, config, uriparts[1]);
+      //return await run(apiservice)(r, config, uriparts[1]);
+      return await run(apiservicehosts)(r, config, uriparts[1]);
     if(uriparts[0] === 'service' && uriparts.length===3)
-      return await apihost(r, config, uriparts[1], uriparts[2]);
+      return await run(apihost)(r, config, uriparts[1], uriparts[2]);
   }
-  return await failpage(r, config, `Unknown URL ${r.uri.split('?')[0]}.`, 404);
+  uriparts = uriparts || uri.split('/').filter((s)=>(s));
+  if(uriparts[0] === 'static')
+    return await run(staticfile)(r, config);
+  return await run(failpage)(r, config, `Unknown URL ${r.uri.split('?')[0]}.`, 404);
 }
 
 async function public_html(r, config) {
@@ -891,6 +986,7 @@ export default {
   bodypage,
   // for js_periodic
   periodic,
+  reloadconf,
   noop,
   // utility functions (for tests - js/cmd.js):
   errorconfig: configfuncs.errorconfig,

@@ -2,7 +2,7 @@
 package-mode = false
 name = "norenye"
 authors = ["Michael Dubner <pywebmail@list.ru>"]
-version = "0.0.1"
+version = "0.0.2"
 description = "Dependency tracking for tests"
 
 [tool.poetry.dependencies]
@@ -19,3 +19,6 @@ build-backend = "poetry.core.masonry.api"
 norecursedirs = ["investigate"]
 # reuse_containers = true
 addopts = "--reuse-containers -l"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

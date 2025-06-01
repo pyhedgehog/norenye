@@ -11,11 +11,11 @@ var vars = {
 //print(njs.dump(globalThis,2));
 fs.writeFileSync(vars.norenye_config, fs.readFileSync('/home/mdubner/src/rutube/_arch/norenye/tests/nginx/norenye.json', { encoding: "utf8" }));
 
-conftest.fetch_funcs.push([/^(?i:https?:\/\/unix:)\/tmp\/svc4\.sock:($|\/)/, function svc4_sock(url, opts) {
+conftest.fetch_funcs.push([/^(?:https?:\/\/unix:)\/tmp\/svc4\.sock:($|\/)/, function svc4_sock(url, opts) {
   var urlo=utils.urlparse(url);
   utils.log.debug(njs.dump({url,urlo,opts}));
   return `svc4=${opts.method||'GET'} ${urlo.path} ${opts.protocol||'HTTP/1.0'}${opts.body?'\n'+String(opts.body):''}`;
-}],[/^(?i:https?:\/\/svc[1-5]\.example\.com)($|\/)/, function svc_example_com(url, opts) {
+}],[/^(?:https?:\/\/svc[1-5]\.example\.com)($|\/)/, function svc_example_com(url, opts) {
   var urlo=utils.urlparse(url);
   utils.log.debug(njs.dump({url,urlo,opts}));
   return `${urlo.hostname.split('.')[0]}=${opts.method||'GET'} ${urlo.path} ${opts.protocol||'HTTP/1.0'}${opts.body?'\n'+String(opts.body):''}`;

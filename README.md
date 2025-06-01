@@ -44,6 +44,7 @@ server {
     }
     location @periodic {
         js_periodic norenye.periodic interval=60s;  # update hosts from `service.url` (see config below)
+        js_periodic norenye.reloadconf interval=9999999999; # see https://github.com/nginx/njs/issues/914#issuecomment-2914869904
     }
     location = /_/health { # may be implemented by norenye.[public_]api, but static one is faster
       default_type application/json;
@@ -105,7 +106,7 @@ server {
 
 Referred as `/etc/nginx/snippets/norenye.json` in sample nginx config above.
 
-```json
+```json5
 {
   "services": {
     "service1": {
@@ -259,9 +260,9 @@ There also can be following template entries in which placeholders will not be p
 
 ## Known issues
 
-- Nginx reload plays bad with caching if norenye.json file was externally changed.
-  You should either change it via API, or stop nginx, change file, start nginx.
-  https://github.com/nginx/njs/issues/914
+- Nginx reload problem and workaround: https://github.com/nginx/njs/issues/914#issuecomment-2914869904
+  Implemented reloadconf, but it's hard to write correct test of this problem.
+- `js_engine qjs;` directive not fully supported (it generates sigfaults on workers for `js_periodic` without meaningful output).
 
 ## For developer
 
@@ -274,30 +275,19 @@ Default depends on pytest execution context.
 
 ### TODO
 
-**Before 0.2**:
+**Before 0.3**:
+- Reintroduce "groups of hosts" from dre-switch. I.e. feature to set cookie for several hosts at once. Aka SSO.
+- Initial support for "default service" - priority.
+
+**Before 0.4**:
 - Test for:
   - HTTP:
-    - [x] `* /{forward-path}`
-    - [x] `GET /_/`
-    - [x] `GET /_/index.html`
-    - [x] `GET /_/index.json`
-    - [x] `GET /_/health`
-    - [x] `GET /_/redirect?set={service-name}[&uri={path}]`
-    - [x] `PUT /_/service/`
-    - [ ] `GET /_/service/{service-name}/`
-    - [ ] `POST /_/service/{service-name}/`
-    - [ ] `DELETE /_/service/{service-name}/`
-    - [ ] `GET /_/service/{service-name}/{host-name}`
-    - [ ] `PUT /_/service/{service-name}/{host-name}`
-    - [ ] `POST /_/service/{service-name}/{host-name}`
-    - [ ] `DELETE /_/service/{service-name}/{host-name}`
-    - [x] `GET /_/config.json`
-    - [x] `GET /_/_session.json`
-    - [x] `GET /_/_debug.json`
+    - [ ] `GET /_/_reloadconf`
   - functions:
     - [ ] getfail
     - [ ] gettarget
     - [ ] periodic
+    - [ ] reloadconf
     - [ ] api
     - [ ] public_api
     - [ ] public_html
@@ -316,16 +306,17 @@ Default depends on pytest execution context.
     - [ ] sessionjson
     - [ ] dbgpage
   - Misc:
-    - [ ] Tokens support
-    - [ ] Tags support
+    - [ ] `js_periodic reloadconf` on `nginx -s reload`
+    - [ ] More auth tests (fails in addition to successes)
 
 **Before 1.0**:
 
 - Think on form of distribution. npm, apt, webi?
 - Document installation.
 - Write tests for all APIs.
+- Support for QJS engine.
 - Autotests against different versions of Nginx/Angie/OpenResty + NJS/QJS.
-- More control for "default service". To start with - priority.
+- More control for "default service".
 - Document interface in README:
   - HTTP endpoints
   - API functions (group by directive - js_set, js_content, js_periodic)
@@ -336,15 +327,18 @@ Default depends on pytest execution context.
   - Minimal (no api, no index.html, only redirect)
   - Separate (admin api via unix socket)
   - etc.
-- Choose autodoc (jsdoc?)
+- Choose autodoc (jsdoc?) and enrich source with comments in related format
 
 **Future**:
 
+- Think if some parameters should be moved from metadata to separete attributes:
+  - `"default"` of service
+  - `"group"` of service
+  - `"tags"` of host/service
 - Prometheus metrics.
 - OpenAPI specs (aka Swagger) with respect to `$norenye_uri`.
 - Think about webpack (as soon as we've split code to modules).
 - `js_body_filter` to add to site floating menu to switch services.
-- Reintroduce "groups of hosts" from dre-switch. I.e. feature to set cookie for several hosts at once. Aka SSO.
 - Reintroduce hashed cookie. This _seems_ more secure, but user always can get list of services from /_/index.html, so it's "security by obscurity". I.e. useless.
 - Tests using direct njs/qjs exec (without nginx at all). See `js/cmd.js`.
 - Customize what variable should be treated as "hostname".
@@ -378,7 +372,7 @@ Things that wouldn't be implemented unless heavy reasons will be provided:
 
 - Plugins (security is our first priority).
 - Remote control from Norenye to backend services (prefer not to be bound to specific protocols).
-- Several templates for different hosts/entrypoints/whatever (there are `/_/index.json` and browser-side JS for such things).
+- Several templates for different hosts/entrypoints/whatever (there are `/_/index.json` and browser-side JS for such things that may be stored in `/_/static/`).
 - Gather hosts from subprocess. Bad idea - NJS has no such feature + we have API for this. At last you can expose admin API via local unix-socket server only.
 
 ### Ideas for PRs
