@@ -5,7 +5,8 @@
       "hosts": [
         "svc1.example.com",
         "svc2.example.com"
-      ]
+      ],
+      "metadata": {"info":"Raw hosts dicts"}
     },
     "svc2": {
       "target": "http://127.0.0.1:8002",
@@ -13,17 +14,41 @@
         "svc2.example.com",
         "svc3.example.com"
       ],
-      "url": "file:///etc/nginx/svc2.json"
+      "priority": 1,
+      "url": "file:///etc/nginx/svc2.json",
+      "metadata": {"info":"Hosts from file"}
     },
     "svc3": {
-      "target": "http://127.0.0.1:8003",
+      "target": "http://127.0.0.1:8003/",
       "hosts": [
         "svc3.example.com",
         "svc1.example.com"
       ],
       "url": "http://127.0.0.1:8003/_urls.json",
+      "metadata": {"info":"Hosts from URL"},
       "token": "333SERVICE3THREESERVICE3THREE333",
       "secrets": ["bot123",""]
+    },
+    "svc4": {
+      "target": "http://unix:/tmp/svc4.sock:",
+      "hosts": ["svc2.example.com","svc4.example.com"],
+      "priority": 100,
+      "metadata": {"info":"unix-socket"}
+    },
+    "svc5": {
+      "target": "@svc5",
+      "hosts": ["svc5.example.com"],
+      "metadata": {"info":"internal subrequest"}
+    },
+    "svc6": {
+      "target": "/svc6/",
+      "hosts": ["svc6.example.com"],
+      "metadata": {"info":"subdir subrequest"}
+    },
+    "svc7": {
+      "target": "http://127.0.0.1:8001/svc7/",
+      "hosts": ["svc7.example.com"],
+      "metadata": {"info":"subdir in target"}
     }
   },
   "token": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",

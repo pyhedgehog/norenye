@@ -2,7 +2,7 @@
 #printf 'HTTP/1.0 200 OK\nServer\072 socat\n\n'
 #exec testapictl.sh "$(timeout 0.1 dos2unix|tail -1)"
 #!/bin/sh
-read -r method url rest 
+read -r method url rest
 read -r input
 while [ -n "$input" ] ; do
   read -r input

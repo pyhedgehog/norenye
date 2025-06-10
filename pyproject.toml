@@ -2,7 +2,7 @@
 package-mode = false
 name = "norenye"
 authors = ["Michael Dubner <pywebmail@list.ru>"]
-version = "0.0.2"
+version = "0.0.3"
 description = "Dependency tracking for tests"
 
 [tool.poetry.dependencies]
@@ -10,6 +10,14 @@ python = "^3.12"
 pytest = "^8.3.5"
 pytest-docker-tools = "^3.1.9"
 pytest-nginx = "^1.1"
+pypandoc = "^1.15"
+python-slugify = "^8.0.4"
+pandoc = "^2.4"
+rich = "^14.0.0"
+json5 = "^0.12.0"
+panflute = "^2.3.1"
+junit2html = "^31.0.2"
+bumpver = "^2024.1130"
 
 [build-system]
 requires = ["poetry-core"]
@@ -18,7 +26,27 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 norecursedirs = ["investigate"]
 # reuse_containers = true
-addopts = "--reuse-containers -l"
+addopts = "--reuse-containers -l --junit-xml=coverage/pytest.junit"
+junit_suite_name = "norenye"
 markers = [
+    "fast: marks tests as fast (use with '-m \"fast\"')",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.bumpver]
+current_version = "0.0.3"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit_message = "bump version {old_version} -> {new_version}"
+commit = false
+tag = false
+push = false
+fetch = false
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = [
+    'current_version = "{version}"',
+    'version = "{pep440_version}"',
+]
+"js/norenye.js" = [
+    "^const norenye_version = '{version}';$",
 ]

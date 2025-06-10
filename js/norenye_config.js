@@ -10,11 +10,12 @@ const default_template = {
   "item-sep": "\n",
   "tail": "\n</ul>\n</body></html>\n",
   "tags": null,
+  "no-tags": null,
   "tag": '$tag',
   "tag-sep": ", "
 };
 const config_placeholder = {status:0,services:null,tokens:null,read_token:false,template:null,metadata:null,writeback:null,name:null};
-const service_placeholder = {target:null,hosts:null,url:null,secrets:null,metadata:null};
+const service_placeholder = {target:null,hosts:null,url:null,secrets:null,metadata:null,priority:null};
 const rights_order = ['admin','all','update','push','read','none'].reverse().reduce((acc,right)=>{
   acc[1].push(right);
   acc[0][right] = Object.fromKeys(acc[1]);
@@ -62,7 +63,7 @@ function enrichtags(tags, force_object) {
 
 function validhostname(s) {
   if(typeof(s) != 'string') return false;
-  return /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/i.test(s);
+  return /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(s);
 }
 
 function enrichhosts(hosts) {
@@ -72,6 +73,7 @@ function enrichhosts(hosts) {
     return undefined;
   if(Array.isArray(hosts))
     hosts = Object.fromKeys(hosts);
+  hosts = Object.fromEntries(Object.entries(hosts).map(it=>[it[0].toLowerCase(),it[1]]));
   if(!Object.keys(hosts).every(validhostname))
     return undefined;
   Object.keys(hosts).forEach(k=>{
@@ -114,6 +116,10 @@ function enrichservice(svc, svcname, config) {
     svcobj.metadata = null;
   if(svcobj.secrets.length === 0)
     delete svcobj.secrets;
+  if(svcobj.priority)
+    svcobj.priority = Number(svcobj.priority);
+  if(!svcobj.priority)
+    delete svcobj.priority;
   return [svcname, svcobj];
 }
 
@@ -150,6 +156,8 @@ function enrichtemplate(tmpl) {
   if(want_tags) {
     if(!tmpl.tags)
       delete tmpl.tags;
+    if(!tmpl["no-tags"])
+      delete tmpl["no-tags"];
     if(!tmpl.tag)
       tmpl.tag = default_template.tag
     if(!tmpl['tag-sep'])
@@ -157,6 +165,8 @@ function enrichtemplate(tmpl) {
   } else {
     if('tags' in tmpl)
       delete tmpl.tags;
+    if("no-tags" in tmpl)
+      delete tmpl["no-tags"];
     if('tag' in tmpl)
       delete tmpl.tag;
     if('tag-sep' in tmpl)
@@ -235,7 +245,7 @@ function writeconfig(config) {
   var config1 = Object.assign({}, config);
   delete config1.status;
   delete config1.name;
-  log.test(`Writing to ${config.writeback}.`);
+  //log.test(`Writing to ${config.writeback}.`);
   fs.writeFileSync(config.writeback, JSON.stringify(config1), { encoding: "utf8" });
 }
 
@@ -246,7 +256,7 @@ export default {
   enrichtags,
   enrichhosts,
   enrichservice,
-  //enrichtemplate,
+  // enrichtemplate,
   enrichconfig,
   rights_order,
   readconfig,

@@ -230,7 +230,7 @@ def wrap_exception(tgt, catch=(Exception,)):
         yield
     except catch as exc:
         raise tgt from exc
-    
+
 #@pytest.fixture
 def asxfail0():
     return wrap_exception(pytest.xfail.Exception)

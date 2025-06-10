@@ -9,19 +9,20 @@ import configfuncs from 'norenye_config.js';
 //const fs = require("fs");
 //const qs = require("querystring");
 
-const norenye_version = '0.0.2';
+const norenye_version = '0.0.3';
 const nocache = Symbol('nocache');
 const log = utils.log;
 
 utils.on('init', function norenye_warn_oninit(){
 if((ngx||{}).worker_id === 0) {
+  if (new Date().getFullYear() >= 2099) { // Search for "Set-Cookie" to understand reason.
+    log.warn("WARNING: Pending deprecation of norenye.js module in front of epoch end.");
+  }
+  if(utils.runmode.once) return;
   if(utils.runmode.dev) {
     log.warn("WARNING: You using norenye.js module in development mode (due to os env NORENYE_MODE="+utils.runmode.value+"). This may disclose sensetive info.");
   } else if(utils.runmode.test) {
     log.warn("WARNING: You using norenye.js module in test mode (due to os env NORENYE_MODE="+utils.runmode.value+"). This may disclose sensetive info.");
-  }
-  if (new Date().getFullYear() >= 2099) { // Search for "Set-Cookie" to understand reason.
-    log.warn("WARNING: Pending deprecation of norenye.js module in front of epoch end.");
   }
 }
 });
@@ -30,7 +31,7 @@ var getconfigfile_iter = 1;
 
 function getconfigfile(r) {
   //if(getconfigfile_iter>1) throw new Error("Look traceback");
-  log.test(`getconfigfile${getconfigfile_iter++}(${r.variables.request_id}/${((r.parent||{}).variables||{}).request_id||''}): norenye_config=${r.variables.norenye_config||'null'}, conf_prefix=${ngx.conf_prefix||'null'}`);
+  //log.test(`getconfigfile${getconfigfile_iter++}(${r.variables.request_id}/${((r.parent||{}).variables||{}).request_id||''}): norenye_config=${r.variables.norenye_config||'null'}, conf_prefix=${ngx.conf_prefix||'null'}`);
   return String(r.variables.norenye_config || ngx.conf_prefix+"/norenye.json").replaceAll('//','/');
 }
 
@@ -40,7 +41,7 @@ function setcache(r, config) {
     log.test(`setcache: no ${cache_name} in ngx.shared`);
     return;
   }
-  log.test(`setcache: writing ${config.name} to ngx.shared.${cache_name}`);
+  //log.test(`setcache: writing ${config.name} to ngx.shared.${cache_name}`);
   ngx.shared[cache_name].set(config.name, JSON.stringify(config));
 }
 
@@ -51,12 +52,12 @@ function getcache(r, config_fn) {
     return nocache;
   }
   if(!ngx.shared[cache_name].has(config_fn)) {
-    log.test(`getcache: no ${config_fn} in ngx.shared.${cache_name}`);
+    //log.test(`getcache: no ${config_fn} in ngx.shared.${cache_name}`);
     return null;
   }
   var config = JSON.parse(ngx.shared[cache_name].get(config_fn));
-  //log.debug(`getcache: got ${config_fn} from ngx.shared.${cache_name}: ${JSON.stringify(config)}`);
-  log.debug(`getcache: got ${config_fn} from ngx.shared.${cache_name}.`);
+  //log.debug(`getcache: got ${config_fn} from ngx.shared.${cache_name}: ${njs.dump(config)}`);
+  //log.debug(`getcache: got ${config_fn} from ngx.shared.${cache_name}.`);
   return config;
 }
 
@@ -194,7 +195,19 @@ async function _periodic(r, config) {
 
 function getsessionservicename(r) {
   var norenye_cookie = r.variables.norenye_cookie || 'norenye';
-  return r.variables['cookie_'+norenye_cookie];
+  var res = r.variables['cookie_'+norenye_cookie];
+  //if(!res) {
+  //  if(!config)
+  //    throw new Error("Internal error (no config)");
+  //}
+  return res;
+}
+
+function services_autoselect(config, host_name, service_selected) {
+  return service_selected?[]:(Object.entries(config.services)
+         .map(it=>Object.assign({name:it[0]},it[1]))
+         .filter(svcobj=>svcobj.hosts && (host_name in svcobj.hosts) && svcobj.priority)
+         .sort((a,b)=>utils.cmp(a.priority,b.priority)));
 }
 
 function getsessionservice(r, config, service_name, return_error) {
@@ -202,21 +215,39 @@ function getsessionservice(r, config, service_name, return_error) {
     throw new Error("Internal error (no config)");
   if((config.metadata || {}).error)
     return return_error?{error:config.metadata.error,name:service_name}:null;
-  if(!service_name)
+  const service_selected = Boolean(service_name);
+  if(!service_name || service_name===true)
     service_name = getsessionservicename(r);
   var service = null;
+  var host_name = r.variables.host;
   if(service_name) {
     service = config.services[service_name] || null;
     if(!service) {
-      log.test(`Norenye cookie set to ${service_name}, but there are no such service configured (only ${Object.keys(config.services)}).`);
-      if(return_error)
-        return {error:'no_service', name:service_name};
+      var services = services_autoselect(config, host_name, service_selected);
+      if(services.length===1) {
+        service = services[0];
+        service.autoselected = true;
+        service_name = service.name;
+      } else {
+        log.test(`Norenye cookie set to ${service_name}, but there are no such service configured (only ${Object.keys(config.services)}).`);
+        if(return_error)
+          return {error:'no_service', name:service_name};
+      }
     } else
       service.name = service_name;
-  } else if(return_error)
-    return {error:'no_cookie', name:service_name};
-  if(service && service.hosts && !(r.variables.host in service.hosts)) {
-    log.test(`Norenye cookie set to ${service_name}, but this service has no host ${r.variables.host} configured (only ${Object.keys(service.hosts)}).`);
+  } else {
+    var services = services_autoselect(config, host_name, service_selected);
+    if(!service_selected)
+      log.debug(`getsessionservice: services by priority: ${njs.dump(services.map(svc=>[svc.name,svc.priority]))}`);
+    if(services.length) {
+      service = services[0];
+      service.autoselected = true;
+      service_name = service.name;
+    } else if(return_error)
+      return {error:'no_cookie', name:service_name};
+  }
+  if(service && service.hosts && !(host_name in service.hosts)) {
+    log.test(`Norenye cookie set to ${service_name}, but this service has no host ${host_name} configured (only ${Object.keys(service.hosts)}).`);
     if(return_error)
       return {error:'no_host', name:service_name};
     service = null;
@@ -224,9 +255,17 @@ function getsessionservice(r, config, service_name, return_error) {
   return service;
 }
 
-function getfail(r) {
+function getautoselected(r) {
   var config = getconfig(r);
   var service = getsessionservice(r, config, null, true);
+  //if(service.error && utils.runmode.test)
+  //  r.headersOut['X-Norenye-Error'] = String(service.error);
+  return Number(Boolean(service.autoselected));
+}
+
+function getfail(r) {
+  var config = getconfig(r);
+  var service = getsessionservice(r, config, true, true);
   //if(service.error && utils.runmode.test)
   //  r.headersOut['X-Norenye-Error'] = String(service.error);
   return Number(Boolean(service.error));
@@ -234,16 +273,20 @@ function getfail(r) {
 
 function gettarget(r) {
   var config = getconfig(r);
-  var service = getsessionservice(r, config);
+  var service = getsessionservice(r, config, true);
   var target = String((service||{}).target||'');
   if(/^[@\/]/.test(target))
     return '';
+  if(/\/$/.test(target))
+    return target+r.variables.uri;
+    // Maybe normalize URL?
+    // return target.replace(/\/+$/,'')+r.variables.uri;
   return target;
 }
 
 function getinttarget(r) {
   var config = getconfig(r);
-  var service = getsessionservice(r, config);
+  var service = getsessionservice(r, config, true);
   var target = String((service||{}).target||'');
   if(target.startsWith('@'))
     return target;
@@ -368,7 +411,9 @@ function gethostinfo(config, host) {
   Object.entries(config.services).forEach((it)=>{
     var name=it[0],svcobj=it[1];
     if(svcobj.hosts && host in svcobj.hosts) {
-      services[name] = {service:svcobj.metadata, host:svcobj.hosts[host]}
+      services[name] = {service:svcobj.metadata, host:svcobj.hosts[host]};
+      if(svcobj.priority)
+        services[name].priority = svcobj.priority;
     }
   });
   var nservices = Object.keys(services).length;
@@ -385,7 +430,7 @@ async function indexjson(r, config) {
     config = getconfig(r);
   if(!methodallowed(r, config)) return;
 
-  var service_name = getsessionservicename(r);
+  var service_name = (getsessionservice(r, config)||{}).name;
   var res = gethostinfo(config, r.variables.host);
   var redirectbase=getredirectbase(r, config), redirecttail=r.args.uri?'&uri='+r.args.uri:'';
   if(service_name in (res.services||{}))
@@ -403,9 +448,8 @@ async function sessionjson(r, config) {
     config = getconfig(r);
   if(!methodallowed(r, config)) return;
 
-  var service_name = getsessionservicename(r);
-  var service = getsessionservice(r, config, service_name);
-  var res = {fail:Number(!service), target:(service||{}).target||'', service:service_name};
+  var service = getsessionservice(r, config, null, true);
+  var res = {fail:Number(!service), target:(service||{}).target||'', service:service.name};
   var token = gettoken(r);
   if((token===null)||!(token in config.tokens))
     res.rights = {'*':config.read_token?'none':'read'};
@@ -415,18 +459,12 @@ async function sessionjson(r, config) {
   await sendjson(r, res);
 }
 
-function cmp(a, b) {
-  if(a == b) return 0;
-  if(a < b) return -1;
-  return 1;
-}
-
 function escapeHTML(s) {
   return String(s).replaceAll('&', '&amp;').replaceAll("'", '&apos;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
 function apply_template(tmpl, vars, apply_meta) {
-  var t = Object.entries(vars||{}).sort((a,b)=>-cmp(a[0].length,b[0].length));
+  var t = Object.entries(vars||{}).sort((a,b)=>-utils.cmp(a[0].length,b[0].length));
   //if('host_meta' in vars)
   //  log.debug(njs.dump(t,2));
   t.forEach((it)=>{
@@ -454,8 +492,11 @@ function getredirectbase(r, config) {
 async function indexhtml(r, config) {
   if(!config)
     config = getconfig(r);
+  var service = getsessionservice(r, config);
+  if(service&&service.autoselected&&utils.boolparam(r.variables.arg_a))
+    return redirectpage(r, config, service.name);
   if(!methodallowed(r, config)) return;
-  var service_name = getsessionservicename(r);
+  var service_name = (service||{}).name;
   var res = gethostinfo(config, r.variables.host);
   var services = res.services||{};
   if(service_name in services)
@@ -472,14 +513,26 @@ async function indexhtml(r, config) {
     var itemvars = Object.assign({}, topvars, {service:it[0],service_meta:it[1].service,host_meta:it[1].host,current:(it[0]==service_name),redirect_url:redirectbase+it[0]+redirecttail});
     if(config.template.tag) {
       var tags = configfuncs.enrichtags([it[0], (itemvars.service_meta||{}).tags, (itemvars.host_meta||{}).tags, itemvars.current?['current']:[]], true);
-      itemvars.tags = Object.entries(tags).map(it=>{
-        log.debug(`indexhtml: ${njs.dump(it)}`);
-        var tagvars = Object.assign({}, itemvars, {tag:it[0],tag_meta:it[1]});
-        return apply_template(config.template.tag, tagvars, true);
-      }).join(config.template['tag-sep']);
-      log.debug(`indexhtml: ${njs.dump(tags)} -> ${njs.dump(itemvars.tags)}`);
-      if(config.template.tags)
-        itemvars.tags = apply_template(config.template.tags, itemvars, true);
+      log.debug(`indexhtml: it=${njs.dump(it)}, tags=${njs.dump(tags)}`);
+      if(Object.keys(tags).length>0) {
+        itemvars.tags = Object.entries(tags).map(it=>{
+          log.debug(`indexhtml: ${njs.dump(it)}`);
+          var tagvars = Object.assign({}, itemvars, {tag:it[0],tag_meta:it[1]});
+          return apply_template(config.template.tag, tagvars, true);
+        }).join(config.template['tag-sep']);
+        log.debug(`indexhtml: ${njs.dump(tags)} -> ${njs.dump(itemvars.tags)}`);
+        if(config.template.tags)
+          itemvars.tags = apply_template(config.template.tags, itemvars, true);
+      } else if(config.template["no-tags"]) {
+        itemvars.tags = apply_template(config.template["no-tags"], itemvars, true);
+      } else {
+        itemvars.tags = '';
+      }
+    } else if(config.template["no-tags"]) {
+      log.debug(`indexhtml: no tags but no-tags`);
+      itemvars.tags = apply_template(config.template["no-tags"], itemvars, true);
+    } else {
+      log.debug(`indexhtml: no tags and no no-tags`);
     }
     return apply_template(itemvars.current?config.template['cur-item']:config.template.item, itemvars, true);
   }).join(config.template['item-sep']);
@@ -502,12 +555,12 @@ async function failpage(r, config, error, status) {
   return r.return(status||401, apply_template(config.template.error, topvars));
 }
 
-async function redirectpage(r, config) {
+async function redirectpage(r, config, service_name) {
   if(!config)
     config = getconfig(r);
-  if(!methodallowed(r, config)) return;
+  //if(!methodallowed(r, config)) return;
   var uri = r.args.uri || r.variables.norenye_redirect || '/';
-  var service_name = r.variables.arg_set;
+  var service_name = service_name||r.variables.arg_set;
   var service = service_name?getsessionservice(r, config, service_name, true):{error:'no_set_arg'};
   var norenye_cookie = r.variables.norenye_cookie || 'norenye';
   var url = `${gethostbase(r)}`;
@@ -528,27 +581,37 @@ async function redirectpage(r, config) {
 async function serviceforward(r, config) {
   if(!config)
     config = getconfig(r);
-  var service_name = getsessionservicename(r);
-  var service = service_name?getsessionservice(r, config, service_name, true):{error:'no_cookie'};
-  log.debug('serviceforward: service='+JSON.stringify({service_name,service}));
+  var service = getsessionservice(r, config, null, true);
+  log.debug('serviceforward?: service='+njs.dump(service));
 
-  if(service.error) {
+  if(service.error || service.autoselected) {
     var url = `${gethostbase(r)}${getapibase(r)}`;
     var uri = r.args.uri || r.variables.norenye_redirect || '/';
-    log.debug(`serviceforward: error=${service.error}, url=${url}`);
+    if(service.autoselected && !service.error)
+      service.error = 'autoselected';
+    log.debug(`serviceforward%: error=${service.error}, url=${url}`);
     if(uri != '/')
-      url += '?uri='+uri;
+      url += '?uri='+uri+(service.autoselected?'&a=1':'');
+    else if(service.autoselected)
+      url += '?a=1';
     if(utils.runmode.test)
       r.headersOut["X-Norenye-Error"] = String(service.error);
     //r.headersOut["Location"] = url;
-    r.return(303, url);
+    r.return(service.autoselected?307:303, url);
   } else if(String(service.target).startsWith('@')) {
+    log.debug(`serviceforward@: name=${service.name}, target=${service.target}`);
     return r.internalRedirect(service.target);
   } else if(String(service.target).startsWith('/')) {
-    return r.internalRedirect((service.target+r.variables.uri).replaceAll('//','/'));
+    var url = (service.target+r.variables.uri).replaceAll('//','/');
+    log.debug(`serviceforward/: name=${service.name}, url=${url}`);
+    return r.internalRedirect(url);
+  //} else if(String(service.target).startsWith('http://127.0.0.1:')) {
+  //  var url = service.target+r.variables.uri;
+  //  log.debug(`serviceforward127: name=${service.name}, url=${url}`);
+  //  return r.internalRedirect(url);
   } else if(/^[\/@]/.test(service.target)) {
     var sropts = {method:r.variables.request_method, args:r.variables.args};
-    //log.debug(`serviceforward: sropts=${njs.dump(sropts)}`);
+    log.debug(`serviceforward/@: sropts=${njs.dump(sropts)}`);
     var reply = await r.subrequest(service.target+r.variables.uri, sropts);
     Object.entries(reply.headersOut).forEach((it)=>{
       log.debug(`reply.rawHeadersOut: ${typeof(it)}=${njs.dump(it)}`);
@@ -557,13 +620,17 @@ async function serviceforward(r, config) {
     //return r.return(200, JSON.stringify(sropts));
   } else {
     var url = service.target+r.variables.uri;
-    log.debug(`serviceforward: name=${service.name}, url=${url}`);
+    log.debug(`serviceforward...: name=${service.name}, url=${url}`);
     //log.debug(`serviceforward: rawHeadersIn=${JSON.stringify(r.rawHeadersIn)}`);
-    var headers = new Headers(r.headersIn), body = r.requestText;
-    headers.set('Host', r.headersIn.host || utils.urlparse(url).hostinfo);
+    var headers = new Headers(r.headersIn);
+    headers.delete('content-length');  // Workaround for https://github.com/nginx/njs/issues/930
+    var body = r.requestText||'';
+    var urlo = utils.urlparse(url);
+    urlo.port = urlo.port||(urlo.scheme==='https'?443:80);
+    headers.set('Host', String(r.headersIn.host || urlo.hostinfo).split(':')[0]+':'+String(urlo.port));
     log.debug(`serviceforward: headers=${njs.dump(headers)}, body=${body&&body.length}`);
     var reply = await ngx.fetch(url, {method:r.method, headers, body});
-    //log.debug(`serviceforward: reply=${JSON.stringify(reply)}`);
+    log.debug(`serviceforward: reply=${njs.dump(reply)}`);
     reply.headers.forEach((n)=>{
       var l = reply.headers.getAll(n), ln = n.toLowerCase();
       var skip = (ln === 'connection')||(ln==='content-length');
@@ -636,6 +703,11 @@ async function apiservicejson(r, config, service_name) {
   return await sendjson(r, res);
 }
 
+async function apiservice_page(r, config) {
+  const service_name = r.variables.service_name || r.uri.split('/').slice(-2)[0];
+  return await apiservice(r, config, service_name);
+}
+
 async function apiservice(r, config, service_name) {
   if(!config)
     config = getconfig(r);
@@ -666,6 +738,12 @@ async function apiservice(r, config, service_name) {
   return r.return(201, '');
 }
 
+async function apiservicehosts_page(r, config) {
+  const service_name = r.variables.service_name || r.uri.split('/').slice(-2)[0];
+  //log.debug(`apiservicehosts_page: uri=${r.uri}, service_name=${service_name}`);
+  return await apiservicehosts(r, config, service_name);
+}
+
 async function apiservicehosts(r, config, service_name) {
   if(!config)
     config = getconfig(r);
@@ -673,8 +751,11 @@ async function apiservicehosts(r, config, service_name) {
   var rights = getrights(r, config, service_name);
   if(!((r.method=='DELETE'?'all':r.method=='POST'?'update':'read') in configfuncs.rights_order[rights]))
     return await needauthpage(r, config, service_name);
-  if(!(service_name in config.services))
+  if(!(service_name in config.services)) {
+    if(utils.runmode.test)
+      r.headersOut['X-Norenye-Error'] = `${service_name} not in ${Object.keys(config.services)}`;
     return await failpage(r, config, `Not exist.`, 404);
+  }
   if((r.method==='GET')||(r.method==='HEAD'))
     return await sendjson(r, config.services[service_name].hosts);
   var dirty = true;
@@ -698,6 +779,12 @@ async function apiservicehosts(r, config, service_name) {
   if(dirty)
     onconfigchange(r, config);
   return r.return(201, '');
+}
+
+async function apihost_page(r, config) {
+  const service_name = r.variables.service_name || r.uri.split('/').slice(-3)[0];
+  const host_name = r.variables.host_name || r.uri.split('/').slice(-2)[0];
+  return await apihost(r, config, service_name, host_name);
 }
 
 async function apihost(r, config, service_name, host_name) {
@@ -797,7 +884,8 @@ async function apijson(r, config, apikind) {
   };
   const indexhtml_url = `${baseurl}index.html`;
   const index_url = `${baseurl}index.json`;
-  const public_api = {indexhtml_url, index_url};
+  const redirect_url = `${baseurl}redirect?set={service}`;
+  const public_api = {indexhtml_url, index_url, redirect_url};
   const admin_api = {
     config_url:`${baseurl}config.json`,
     session_url:`${baseurl}_session.json`,
@@ -817,12 +905,16 @@ async function apijson(r, config, apikind) {
       res = Object.assign({}, all_api, public_api);
       break;
     case 'public_html':
-      res = Object.assign({}, all_api, {indexhtml_url});
+      res = Object.assign({}, all_api, {indexhtml_url, redirect_url});
       break;
     default:
       res = {error: 'Unknown URL.'};
   }
   return await sendjson(r, res);
+}
+
+async function apijsonpage(r, config) {
+  return apijson(r, config, r.variables.norenye_api_kind);
 }
 
 async function adminapijson(r, config) {
@@ -874,7 +966,10 @@ async function norenye_api(r, config, apikind) {
   var baseuri = getapibase(r);
   var baselen = baseuri.length;
   var uri = r.uri, uriparts, service_name, rights;
-  var run = (f)=>{log.debug(`norenye_api[${apikind}]->${f.name}`);return f;};
+  var run = (f)=>{
+      log.debug(`norenye_api[${apikind}]->${f.name}`);
+      return f;
+    };
   apikind = apikind || 'api';
   if((uri === '/favicon.ico') && existsFileSync(r.realpath_root+getapibase(r)+'static/favicon.ico'))
     return await run(_staticfile)(r, r.realpath_root+getapibase(r)+'static/favicon.ico');
@@ -957,12 +1052,14 @@ function getbody(r) {
 }
 
 function bodypage(r) {
+  log.debug(`bodypage: bodypage=${njs.dump(r.variables.bodypage)}, requestText=${njs.dump(r.requestText)}`);
   r.return(200,r.variables.bodypage+(r.requestText?'\n'+r.requestText:''));
 }
 
 export default {
   // variables (for js_set):
   getfail,
+  getautoselected,
   gettarget,
   getinttarget,
   getbody,
@@ -971,6 +1068,8 @@ export default {
   public_configjson,
   indexjson,
   indexhtml,
+  redirectpage,
+  apijsonpage,
   adminapijson,
   public_api,
   public_html,
@@ -978,8 +1077,9 @@ export default {
   admin_api,
   serviceforward,
   apiservices,
-  apiservice,
-  apihost,
+  apiservicehosts:apiservicehosts_page,
+  apiservice:apiservice_page,
+  apihost:apihost_page,
   sessionjson,
   dbgpage,
   healthcheck,

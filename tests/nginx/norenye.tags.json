@@ -6,26 +6,49 @@
         "svc1.example.com": {"tags": "host1"},
         "svc2.example.com": {"tags": "host2"}
       },
-      "metadata": {"tags":"svc1"}
+      "metadata": {"tags":"svc1","info":"Raw hosts dicts"}
     },
     "svc2": {
       "target": "http://127.0.0.1:8002",
-      "metadata": {"tags":"svc2"},
       "hosts": [
         "svc2.example.com",
         "svc3.example.com"
       ],
-      "url": "file:///etc/nginx/svc2.json"
+      "priority": 1,
+      "url": "file:///etc/nginx/svc2.json",
+      "metadata": {"tags":"svc2","info":"Hosts from file"}
     },
     "svc3": {
-      "target": "http://127.0.0.1:8003",
+      "target": "http://127.0.0.1:8003/",
       "hosts": [
         "svc3.example.com",
         "svc1.example.com"
       ],
       "url": "http://127.0.0.1:8003/_urls.json",
+      "metadata": {"info":"Hosts from URL"},
       "token": "333SERVICE3THREESERVICE3THREE333",
       "secrets": ["bot123",""]
+    },
+    "svc4": {
+      "target": "http://unix:/tmp/svc4.sock:",
+      "hosts": ["svc2.example.com","svc4.example.com"],
+      "priority": 100,
+      "metadata": {"tags":["unix","svc4"],"info":"unix-socket"}
+    },
+    "svc5": {
+      "target": "@svc5",
+      "hosts": ["svc5.example.com"],
+      "metadata": {"tags":"int","info":"internal subrequest"}
+    },
+    "svc6": {
+      "target": "/svc6/",
+      "hosts": ["svc6.example.com"],
+      "metadata": {"tags":["sub","svc6"],"info":"subdir subrequest"}
+    },
+    "svc7": {
+      "target": "http://127.0.0.1:8001/svc7/",
+      "hosts": ["svc7.example.com"],
+      "metadata": {"tags":["sub","svc7"],"info":"subdir in target"}
     }
   },
   "token": "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
@@ -35,11 +58,12 @@
   "template": {
     "error": "<html><head><title>Error on $host</title></head><body>\n<p>$error</p></body></html>",
     "head": "<html><head><title>Select env for host $host</title></head><body>\n<ul>",
-    "item": "<li><a href=\"$redirect_url\">$service</a> ($tags)</li>",
-    "cur-item": "<li><b><a href=\"$redirect_url\">$service</a></b> ($tags)</li>",
+    "item": "<li><a href=\"$redirect_url\">$service</a>$tags</li>",
+    "cur-item": "<li><b><a href=\"$redirect_url\">$service</a></b>$tags</li>",
     "item-sep": "\n",
     "tail": "\n</ul>\n</body></html>\n",
-    "tags": "$tags",
+    "notags": " {notags}",
+    "tags": " ($tags)",
     "tag": "$tag",
     "tag-sep": ", "
   }

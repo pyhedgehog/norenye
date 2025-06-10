@@ -11,36 +11,78 @@ There can be several "services" behind any virtual host.
 If there are only one service or client already selected "prefered" service all requests (except special - /_/ in example config) will be forwarded to it else selection page on /_/ will be shown.
 Selection page sets cookie with prefered service.
 
+### Public API
+
+- `GET /_/static/`
+  Directory that can contain resources used in `/_/index.html` templates (styles, scripts, images, etc.).
+- `GET /_/`
+  `GET /_/index.html`
+  Selection page. List of links to redirect page for each service. Can be customized by admin using simple templates.
+- `GET /_/index.json`
+  Selection info. Object of services with objects like {"service":<service-meta>, "host":<host-meta>} for current host in JSON format.
+  Can be used in scripts to customize `/_/index.html` or service-specific pages.
+- `GET /_/redirect?set={servicename}[&uri=/]`
+  Redirect page. Will set cookie and redirect to root URI.
+  Most important part of norenye ecosystem - can be used to create persistent links to specific service.
+- `GET /_/health`
+  Returns `{"status": "ok"}`.
+- `* /*`
+  If service seleted (or default one set by admin) request will be forwarded to service.
+  On other case request will be redirected to `/_/`.
+
 ## Site admin view
 
 You can have services that want's to take several virtual hosts from shared namespace.
-If services stuck with same virtual host name you want to allow user to choose which one it want to use. Usually it's prod/dev selection or something like AB-testing.
+If services stuck with same virtual host name you want to allow user to choose which one it want to use.
+Usually it's prod/dev selection or something like AB-testing.
+
+### Admin API
+
+In addition of endpoints available in [Public API](#Public API) above there are:
+
+- `GET /_/config.json`
+  Reads whole config. If not with "admin" rights tokens and url-authinfo will be skipped.
+- `PUT /_/service/`
+  Create new service. Object match format of config except additional "name" field. Requires "admin"/"all" right for service.
+- `GET /_/service/{service-name}/`
+  List of hosts for specified service. May require authentication depending on "read_token" config.
+- `POST /_/service/{service-name}/`
+  Replace list of hosts for specified service. Requires authentication with service or global token using 'Authorization: Bearer ***' header.
+- `DELETE /_/service/{service-name}/`
+  Delete specified service. Requires "admin"/"all" right for service.
+- `GET /_/service/{service-name}/{host-name}`
+  Returns host meta. May require authentication depending on "read_token" config.
+- `PUT /_/service/{service-name}/{host-name}`
+  Add item to list of hosts for specified service. Requires at least "update" right for service.
+- `POST /_/service/{service-name}/{host-name}`
+  Update host meta. Requires at least "update" right for service.
+- `DELETE /_/service/{service-name}/{host-name}`
+  Delete item from list of hosts for specified service. Requires at least "update" right for service.
 
 ### Nginx configuration
 
-Somewhere under `nginx.conf`:
+Somewhere under `/etc/nginx/nginx.conf`:
 ```
+env NORENYE_PERIODIC;
+env NORENYE_MODE;
 load_module modules/ngx_http_js_module.so;
 http {
-js_path /opt/norenye/js/;  # path where you've installed norenye.js:
+js_path /etc/nginx/js/;  # path where you've installed norenye.js:
 js_import norenye.js;
+js_shared_dict_zone zone=norenye:1M;  # at least size of processed config (as in `/_/config.json` with admin token)
 server {
     server_name *.example.com;
+    js_set $norenye_autoselected norenye.getautoselected;  # Boolean. Set to 1 if $norenye_fail=1, but there are default service.
     js_set $norenye_fail norenye.getfail;  # Boolean. Set to 1 if no norenye cookie set and no default target for this host.
     js_set $norenye_target norenye.gettarget;  # URL. Should be passed to proxy_pass.
     # See: https://github.com/nginx/njs/issues/907
     # Normal Request object can use any nginx variable,
     # but js_periodic creates pseudo-request that can see
     # only variables from core (and js) module.
-    map - $norenye_config {
-        default '/etc/nginx/snippets/norenye.json';  # path to config
-    }
-    map - $norenye_shared_dict {
-        default norenye;  # must match `js_shared_dict_zone` directive above
-    }
-    js_shared_dict_zone zone=norenye:1M;  # at least size of config
+    js_var $norenye_config '/etc/nginx/norenye.json';  # path to config
+    js_var $norenye_shared_dict 'norenye';  # must match name in `js_shared_dict_zone` directive
     location /_/static/ {
-        alias "/opt/norenye/static/";  # path to css and other files you want to 
+        alias "/opt/norenye/static/";  # path to css and other files you want to
     }
     location @periodic {
         js_periodic norenye.periodic interval=60s;  # update hosts from `service.url` (see config below)
@@ -60,47 +102,39 @@ server {
         #   set $norenye_uri /something-other/;
         # also you can patch where `/-/redirect` will redirect:
         #   set $norenye_redirect /;
-        # API:
-        #   GET /_/
-        #   GET /_/index.html
-        #     Selection page. List of links to redirect page for each service.
-        #   GET /_/index.json
-        #     Selection info. Object of services with objects like {"service":<service-meta>, "host":<host-meta>} for current host in JSON format.
-        #   GET /_/health
-        #     Returns '{"status": "ok"}'.
-        #   GET /_/redirect?set=servicename
-        #     Redirect page. Will set cookie and redirect to root URI.
-        #   PUT /_/service/
-        #     Create new service. Object match format of config except additional "name" field. Requires "admin"/"all" right for service.
-        #   GET /_/service/{service-name}/
-        #     List of hosts for specified service. May require authentication depending on "read_token" config.
-        #   POST /_/service/{service-name}/
-        #     Replace list of hosts for specified service. Requires authentication with service or global token using 'Authorization: Bearer ***' header.
-        #   DELETE /_/service/{service-name}/
-        #     Delete specified service. Requires "admin"/"all" right for service.
-        #   GET /_/service/{service-name}/{host-name}
-        #     Returns host meta. May require authentication depending on "read_token" config.
-        #   PUT /_/service/{service-name}/{host-name}
-        #     Add item to list of hosts for specified service. Requires at least "update" right for service.
-        #   POST /_/service/{service-name}/{host-name}
-        #     Update host meta. Requires at least "update" right for service.
-        #   DELETE /_/service/{service-name}/{host-name}
-        #     Delete item from list of hosts for specified service. Requires at least "update" right for service.
-        #   GET /_/config.json
-        #     Reads whole config. If not with "admin" rights tokens and url-authinfo will be skipped.
     }
     location / {
         proxy_set_header Host $host;
         if ($norenye_target) {  # You maybe want to add other options (like add_header and alike)
           proxy_pass $norenye_target;
         }
-        if ($norenye_fail) {
-          return 302 '/_/';
+        if ($norenye_autoselected) {
+          return 307 '/_/?uri=$uri&a=1';
         }
+        if ($norenye_fail) {
+          return 303 '/_/?uri=$uri';
+        }
+        js_content norenye.serviceforward;   # Last resort failover. See examples for other options.
     }
 }
 }
 ```
+
+#### JS functions
+
+TBD.
+
+#### Nginx variables
+
+TBD.
+
+#### Environment variables
+
+- `$NORENYE_PERIODIC`
+  Can be set to disable runs of `norenye.periodic` without disabling it in `nginx.conf`.
+- `$NORENYE_MODE`
+  Mostly configures log level (and some helpful for config debugging headers).
+  Defaults to `prod`. Other options are `test`, `dev`, `once`.
 
 ### Configuration file
 
@@ -109,7 +143,7 @@ Referred as `/etc/nginx/snippets/norenye.json` in sample nginx config above.
 ```json5
 {
   "services": {
-    "service1": {
+    "svc1": {
       "target": "http://127.0.0.1:8001",
       "hosts": [
         "svc1a.example.com",
@@ -118,52 +152,87 @@ Referred as `/etc/nginx/snippets/norenye.json` in sample nginx config above.
         "svc1d.example.com",
       ]
     },
-    "service2": {
-      "target": "https://127.0.0.1:8002",
-      "url": "https://127.0.0.1:8002/domains.json"  # must return JSON list of hosts
+    "svc2": {
+      "target": "http://127.0.0.1:8002",
+      "priority": 1,
+      "url": "file:///etc/nginx/svc2.json"  // must contains JSON list of hosts
     },
-    "service3": {
-      "target": "https://127.0.0.1:8003",
-      "url": "file:///etc/nginx/snippets/service3.json"  # must contains JSON list of hosts
+    "svc3": {
+      "target": "http://127.0.0.1:8003/",
+      "url": "http://127.0.0.1:8003/_urls.json"  // must return JSON list of hosts
     },
-    "service4": {
+    "svc4": {
       "target": "https://127.0.0.1:8004",
-      "token": "token1"   # will be used to authenticate push-update of list of hosts (see `POST /_/service/{}.json`)
-                          # same as `"token1": {"service4": "update"}` record in global "tokens"
-    }
-    "service5": {  #
+      "token": "token1"   // will be used to authenticate push-update of list of hosts (see `POST /_/service/{}.json`)
+                          // same as `"token1": {"service4": "update"}` record in global "tokens"
+    },
+    "svc5": {
       "target": "http://127.0.0.1:8005/secretstring/",
       "hosts": {
-        "svc1a.example.com": {"tags": ["a1", "b2"]},   # any object that will be accessible as $host_meta
+        "svc1a.example.com": {"tags": ["a1", "b2"]},   // any object that will be accessible as $host_meta
         "svc1d.example.com": null,
       },
-      "secrets": ["secretstring"]  # this substring will be replaced with "***" on non-admin reads.
-      "metadata": {}  # any object that will be accessible as $service_meta
+      "secrets": ["secretstring"],  // this substring will be replaced with "***" on non-admin reads.
+      "metadata": {}  // any object that will be accessible as $service_meta
     },
   },
-  "template": {   # head, item, cur-item, tail. Placeholders in $variable_name form will be replaced with value. Look separate section for available variables.
+  "template": {   // `head`, `item`, `cur-item`, `tail`. Placeholders in $variable_name form will be replaced with value. Look separate section for available variables.
     "head": "<html><head><title>Select env for host $host</title><link rel=\"stylesheet\" href=\"https://unpkg.com/missing.css@1.1.1\"><link rel=\"stylesheet\" href=\"static/selector.css\"/></head><body>\n<ul>",
-    "item": "<li><a href=\"$redirect_url\" data-service="$service_meta" data-host="$host_meta">$service</a></li>\n",
-    "cur-item": "<li><b><a href=\"$redirect_url\" data-service="$service_meta" data-host="$host_meta">$service</a></b></li>\n",
+    "item": "<li><a href=\"$redirect_url\" data-service=\"$service_meta\" data-host=\"$host_meta\">$service</a></li>",
+    "cur-item": "<li><b><a href=\"$redirect_url\" data-service=\"$service_meta\" data-host=\"$host_meta\">$service</a></b></li>",
     "tail": "</ul>\n</body></html>\n"
+    // There also can be `error`, `item-sep`, `tags`, `tag`, `tag-sep`.
   },
-  "metadata": {}  # any object that will be accessible as $meta
-  "token": "token2",  # same as `"token2": {"*": "all"}` record in "tokens"
-  "read_token": false,  # false (or absent) - GET for JSON's available without auth,
-                        # true - "token" should be used,
-                        # "token3" - declares separate token, like "token3": {"*": "read"}
+  "metadata": {},  // any object that will be accessible as $meta
+  "token": "token2",  // same as `"token2": {"*": "all"}` record in "tokens"
+  "read_token": false,  // false (or absent) - GET for JSON's available without auth,
+                        // true - "token" should be used,
+                        // "token3" - declares separate token, like "token3": {"*": "read"}
   "tokens": {
-    "token4": {"service6":"all"},	# undefined service. You can use token to create/update/read/delete it.
-    "token5": {"service4":"update"},	# You can use token to update/read it.
-    "token6": {"*":"push"},		# You can use token to update any service, but not to read anything (if "read_token" set)
-    "token7": {"*":"read"},		# You can use token to read any service
-    "token7": {"*":"admin"},		# You can use token to do anything. Difference from "all" is that allows to read tokens. Use with care.
+    "token4": {"service6":"all"},	// undefined service. You can use token to create/update/read/delete it.
+    "token5": {"service4":"update"},	// You can use token to update/read it.
+    "token6": {"*":"push"},		// You can use token to update any service, but not to read anything (if "read_token" set)
+    "token7": {"*":"read"},		// You can use token to read any service
+    "token7": {"*":"admin"},		// You can use token to do anything. Difference from "all" is that allows to read tokens. Use with care.
   },
-  "writeback": true	# Save modified config back to file, or if a string, use it as a path to mutable copy, read from it, keeping original config intact. NB: Will parse twice.
+  "writeback": true	// Save modified config back to file, or if a string, use it as a path to mutable copy, read from it, keeping original config intact. NB: Will parse twice.
 }
 ```
 
-### Templates
+#### Structure of config
+
+- `"writeback"`
+  Boolean or file path. Save modified config back to file, or if a string,
+  use it as a path to mutable copy, read from it, keeping original config intact.
+  NB: Will cause parsing twice if string.
+- `"services"`
+  Dictionary of services. Service object described in next [section](#Service definition).
+- `"tokens"`
+  Dictionary of auth token. Value of token is dictionary
+  with services (or `"*"` for any service) as a key and string meaning level of rights as a value.
+  Rights can be one of:
+  - `"none"` — no access will be granted.
+  - `"read"` — read access will be granted. For `/_/config.json` secure stripped-down form will be returned.
+  - `"push"` — only changes are allowed (i.e. doesn't includes `"read"`).
+  - `"update"` — `"read"`+`"push"`.
+  - `"all"` — `"update"` plus create/delete.
+  - `"admin"` — unlimited operations.
+- `"token"`
+  Simplified form of `"token": {"*": "all"}` record in `"tokens"`.
+- `"read_token"`
+  - `false` (or absent) - GET for JSON's available without auth
+  - `true` - token with at least `"read"` right should be used for GET operations
+  - `"token"` - declares separate token, like `"token": {"*": "read"}`
+- `"template"`
+  Dictionary of template parts. Described in separate [section](#Templates).
+- `"metadata"`
+  Any object. Can be used as `$meta` placeholder in templates.
+
+#### Service definition
+
+TBD.
+
+#### Templates
 
 It can be just skipped and simple template will be used that doesn't uses static files or external resources.
 
@@ -174,7 +243,11 @@ In "head"/"tail" templates you can use only "global" variables:
 - `$services` - comma-separated list of service names
 - `$meta` - JSON-encoded object with "metadata" field of global config
 
-In "item"/"cur-item" templates in addition there are service-specific variables:
+In "error" template there also can be:
+
+- `$error` - text of error (operation-specific)
+
+In "item"/"cur-item"/"tags"/"no-tags" templates in addition to "global" variables there are service-specific variables:
 
 - `$service` - name of service
 - `$redirect_url` - can be put to `<a href="$redirect_url">`
@@ -183,10 +256,15 @@ In "item"/"cur-item" templates in addition there are service-specific variables:
 - `$current` - Can be true if cookie set to current service or false otherwise
 - `$tags` - If this placeholder presents in "item"/"cur-item" template that template could define additional fields "tag" and "tag-sep"
 
-If `$tags` placeholder used and host metadata has "tags" attribute, it will be parsed:
+If `$tags` placeholder used and service and/or host metadata has "tags" attribute, it will be parsed:
+
 1. Tt can be string, with tags separated by commas.
 2. It can be array of strings.
 3. It can be object where keys become tags and values become `$tag_meta`.
+
+If "tags" template defined it can be used to create wrapper around `$tags`.
+
+If "no-tags" template defined it will be inserted in place of `$tags` if there are no tags for item.
 
 In "tag" template you can also use:
 
@@ -223,40 +301,7 @@ There also can be following template entries in which placeholders will not be p
     2. Safe `norenye.public_api` or ever `norenye.public_html` (if your template doesn't uses `/_/index.json`).
     3. Separate `norenye.admin_api` can be moved to other location (with `js_set $norenye_uri ...`) or server.
     4. For precise config you can use individual functions behind each api endpoint.
-       ```
-       location /_/ {
-         location = /_/ {
-           js_body_content norenye.indexhtml;
-         }
-         location = /_/index.html {
-           js_body_content norenye.indexhtml;
-         }
-         location = /_/health {
-           default_type application/json;
-           return 200 '{"status": "ok"}';
-           #js_body_content norenye.healthcheck;
-         }
-         location = /_/redirect {
-           js_body_content norenye.redirectpage;
-         }
-         location = /_/index.json {
-           js_body_content norenye.indexjson;
-         }
-         location = /_/config.json {
-           js_body_content norenye.configjson;
-         }
-         location = /_/service/ {
-           js_body_content norenye.apiservices;
-         }
-         location ~ /_/service/([^/]+)/ {
-           js_body_content norenye.apiservicehosts;
-         }
-         location ~ /_/service/([^/]+)/([^/]+)/ {
-           js_body_content norenye.apihost;
-         }
-       }
-       ```
-       TODO: Write example configs for each mentioned case.
+       See `tests/nginx/nginx.splitapi.conf`.
 
 ## Known issues
 
@@ -275,11 +320,8 @@ Default depends on pytest execution context.
 
 ### TODO
 
-**Before 0.3**:
-- Reintroduce "groups of hosts" from dre-switch. I.e. feature to set cookie for several hosts at once. Aka SSO.
-- Initial support for "default service" - priority.
-
 **Before 0.4**:
+- Reintroduce "groups of hosts" from dre-switch. I.e. feature to set cookie for several hosts at once. Aka SSO.
 - Test for:
   - HTTP:
     - [ ] `GET /_/_reloadconf`
@@ -313,15 +355,13 @@ Default depends on pytest execution context.
 
 - Think on form of distribution. npm, apt, webi?
 - Document installation.
-- Write tests for all APIs.
+- Improve tests.
 - Support for QJS engine.
 - Autotests against different versions of Nginx/Angie/OpenResty + NJS/QJS.
 - More control for "default service".
 - Document interface in README:
-  - HTTP endpoints
   - API functions (group by directive - js_set, js_content, js_periodic)
   - Nginx variables (with limitations - used in periodic can be `set`)
-  - Environment variables
   - Attributes of `norenye.json` objects (root config, service)
 - Alternative config examples:
   - Minimal (no api, no index.html, only redirect)

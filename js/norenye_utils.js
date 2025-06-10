@@ -49,6 +49,12 @@ function str2varname(s) {
   return String(s).toLowerCase().replaceAll('-','_');
 }
 
+function cmp(a, b) {
+  if(a == b) return 0;
+  if(a < b) return -1;
+  return 1;
+}
+
 function urlparse(s) {
   var o = url_re.exec(String(s));
   if(o === null)
@@ -167,6 +173,7 @@ export default {
   copyObject,
   boolparam,
   str2varname,
+  cmp,
   addr2url,
   ro_url,
   hidesecrets_factory,
